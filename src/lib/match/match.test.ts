@@ -120,15 +120,16 @@ describe("decide", () => {
         { nzbn: "9429000000011", entityName: "Jones Holdings Limited" },
       ],
     });
-    expect(["needs_review", "not_found"]).toContain(r.status);
+    expect(r.status).toBe("needs_review");
   });
 
-  it("returns not_found when no candidate scores above review band", () => {
+  it("returns needs_review even when score is low, as long as candidates exist", () => {
+    // Any candidate is worth a human glance — they can reject in one click.
     const r = decide({ query: "Completely Unrelated Co", candidates: [aCo, xyz] });
-    expect(r.status).toBe("not_found");
+    expect(r.status).toBe("needs_review");
   });
 
-  it("returns not_found for empty candidates", () => {
+  it("returns not_found only when candidate list is empty", () => {
     const r = decide({ query: "ABC Limited", candidates: [] });
     expect(r.status).toBe("not_found");
     expect(r.best).toBeNull();

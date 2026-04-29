@@ -39,11 +39,14 @@ export interface MatchOutcome {
   candidates: ScoredCandidate[];
 }
 
-const HIGH_CONFIDENCE_THRESHOLD = 0.85;
-const REVIEW_LOWER_BOUND = 0.65;
+const DEFAULT_HIGH_CONFIDENCE_THRESHOLD = 0.85;
 const TIE_BREAKER_GAP = 0.05;
 
-export function decide({ query, candidates }: MatchInput): MatchOutcome {
+export function decide({
+  query,
+  candidates,
+  highConfidenceThreshold = DEFAULT_HIGH_CONFIDENCE_THRESHOLD,
+}: MatchInput & { highConfidenceThreshold?: number }): MatchOutcome {
   if (!query || candidates.length === 0) {
     return { status: "not_found", method: null, confidence: 0, best: null, candidates: [] };
   }
@@ -91,21 +94,24 @@ export function decide({ query, candidates }: MatchInput): MatchOutcome {
   }
 
   // High-confidence fuzzy: top score above threshold AND clear gap to runner-up.
-  if (best.score >= HIGH_CONFIDENCE_THRESHOLD) {
+  if (best.score >= highConfidenceThreshold) {
     const gap = second ? best.score - second.score : 1;
     if (!second || gap >= TIE_BREAKER_GAP) {
       return {
         status: "matched",
         method: "fuzzy",
-        confidence: 0.85 + (best.score - HIGH_CONFIDENCE_THRESHOLD) * 0.5,
+        confidence: best.score,
         best,
         candidates: scored,
       };
     }
   }
 
-  // Ambiguous: in review band, or top two too close.
-  if (best.score >= REVIEW_LOWER_BOUND) {
+  // Anything below auto-match: if the register returned ANY candidates,
+  // surface for human review. Even a low-scoring candidate is worth a
+  // glance — the user can reject in one click. We only return not_found
+  // when the register itself produced zero results.
+  if (scored.length > 0) {
     return {
       status: "needs_review",
       method: null,
@@ -115,12 +121,11 @@ export function decide({ query, candidates }: MatchInput): MatchOutcome {
     };
   }
 
-  // No match.
   return {
     status: "not_found",
     method: null,
-    confidence: best.score,
+    confidence: 0,
     best: null,
-    candidates: scored.slice(0, 3),
+    candidates: [],
   };
 }

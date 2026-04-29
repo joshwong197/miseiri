@@ -3,6 +3,7 @@
 import { Fragment, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
+import { normalizeForCompare } from "@/lib/match/normalize";
 
 type Stage = "upload" | "map" | "fields" | "process" | "done";
 type RowStatus = "pending" | "processing" | "matched" | "needs_review" | "not_found" | "error" | "rejected";
@@ -52,6 +53,7 @@ export default function HomePage() {
     directors: false,
     shareholders: false,
   });
+  const [matchThreshold, setMatchThreshold] = useState(0.85);
   const [results, setResults] = useState<RowResult[]>([]);
   const [progressIdx, setProgressIdx] = useState(0);
   const [running, setRunning] = useState(false);
@@ -59,6 +61,13 @@ export default function HomePage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef(false);
   const pauseRef = useRef(false);
+  // Original Excel workbook is preserved when the user uploads .xlsx so
+  // the download can append columns without rewriting the source cells —
+  // this keeps original cell formatting, formulas, and other sheets intact.
+  const originalWorkbookRef = useRef<XLSX.WorkBook | null>(null);
+  // Per-row dedupe key (normalized name) computed once at upload. Rows
+  // sharing the same key are processed once; the result is propagated.
+  const dedupeKeysRef = useRef<string[]>([]);
 
   const parseFile = (file: File) => {
     setFileName(file.name);
@@ -78,12 +87,14 @@ export default function HomePage() {
           hdrs = parsed.length > 0 ? Object.keys(parsed[0]) : [];
         } else if (file.name.endsWith(".xlsx") || file.name.endsWith(".xls")) {
           const data = new Uint8Array(e.target!.result as ArrayBuffer);
-          const wb = XLSX.read(data, { type: "array" });
+          const wb = XLSX.read(data, { type: "array", cellStyles: true });
+          originalWorkbookRef.current = wb;
           const ws = wb.Sheets[wb.SheetNames[0]];
           const json = XLSX.utils.sheet_to_json(ws, { defval: "" }) as ParsedRow[];
           parsed = json;
           hdrs = parsed.length > 0 ? Object.keys(parsed[0]) : [];
         } else {
+          originalWorkbookRef.current = null;
           const text = e.target!.result as string;
           const result = Papa.parse<ParsedRow>(text, { header: true, skipEmptyLines: true });
           parsed = result.data.filter((r) => Object.values(r).some((v) => v && String(v).trim()));
@@ -144,7 +155,7 @@ export default function HomePage() {
   // Process a single row. Used by the initial run, the retry button, and
   // the candidate-picker. `overrideNzbn` lets a manual pick bypass the
   // search step and look up directly.
-  const processRow = async (index: number, overrideNzbn?: string): Promise<void> => {
+  const processRow = async (index: number, overrideNzbn?: string): Promise<Record<string, unknown> | null> => {
     setResults((prev) => prev.map((r) => (r.index === index ? { ...r, status: "processing" } : r)));
     const row = rows[index];
     const payload = {
@@ -152,6 +163,7 @@ export default function HomePage() {
       nzbn: overrideNzbn ?? (columnMap.nzbn ? row[columnMap.nzbn] : undefined),
       companyNumber: columnMap.companyNumber ? row[columnMap.companyNumber] : undefined,
       fields: fieldGroups,
+      matchThreshold,
     };
     try {
       const res = await fetch("/api/match-row", {
@@ -162,9 +174,18 @@ export default function HomePage() {
       const data = await res.json();
       const status = (data?.nzbn_status ?? "error") as RowStatus;
       setResults((prev) => prev.map((r) => (r.index === index ? { ...r, status, enriched: data } : r)));
+      return data;
     } catch (err) {
       setResults((prev) => prev.map((r) => (r.index === index ? { ...r, status: "error", error: String(err) } : r)));
+      return null;
     }
+  };
+
+  // Apply a previously-computed result to a row without hitting the API.
+  // Used by dedupe propagation and "send to Mihari" inference.
+  const applyCachedResult = (index: number, enriched: Record<string, unknown>) => {
+    const status = (enriched.nzbn_status ?? "error") as RowStatus;
+    setResults((prev) => prev.map((r) => (r.index === index ? { ...r, status, enriched } : r)));
   };
 
   const startProcessing = async () => {
@@ -174,6 +195,26 @@ export default function HomePage() {
     abortRef.current = false;
     pauseRef.current = false;
 
+    // Compute dedupe keys now that the column mapping is settled.
+    // Key prefers NZBN if present (most reliable), then company number,
+    // then normalised entity name. Empty key means "always treat as
+    // unique" — don't dedupe rows that have nothing to dedupe on.
+    const keys = rows.map((row) => {
+      const nzbn = (columnMap.nzbn && row[columnMap.nzbn] || "").toString().trim();
+      if (nzbn) return `nzbn:${nzbn}`;
+      const cn = (columnMap.companyNumber && row[columnMap.companyNumber] || "").toString().trim();
+      if (cn) return `cn:${cn}`;
+      const name = (columnMap.name && row[columnMap.name] || "").toString().trim();
+      const norm = normalizeForCompare(name);
+      return norm ? `name:${norm}` : "";
+    });
+    dedupeKeysRef.current = keys;
+
+    // In-session dedupe: the same name appears multiple times in real
+    // ledgers (one customer billed under several bill-to entities). We
+    // process the first occurrence, then propagate to subsequent ones.
+    const cache = new Map<string, Record<string, unknown>>();
+
     for (let i = 0; i < rows.length; i++) {
       if (abortRef.current) break;
       while (pauseRef.current && !abortRef.current) {
@@ -182,10 +223,20 @@ export default function HomePage() {
       if (abortRef.current) break;
 
       setProgressIdx(i);
-      await processRow(i);
 
-      if (i < rows.length - 1 && !abortRef.current) {
-        await new Promise((r) => setTimeout(r, ROW_DELAY_MS));
+      const key = keys[i] ?? "";
+      const cached = key ? cache.get(key) : undefined;
+      if (cached) {
+        // Mark as processing briefly for visual feedback, then apply.
+        setResults((prev) => prev.map((r) => (r.index === i ? { ...r, status: "processing" } : r)));
+        applyCachedResult(i, { ...cached, _from_cache: true });
+      } else {
+        const result = await processRow(i);
+        if (result && key) cache.set(key, result);
+        // Politeness delay only for real API calls.
+        if (i < rows.length - 1 && !abortRef.current) {
+          await new Promise((r) => setTimeout(r, ROW_DELAY_MS));
+        }
       }
     }
 
@@ -216,15 +267,27 @@ export default function HomePage() {
     setRunning(false);
   };
 
-  const downloadCsv = () => {
-    const enrichedKeys = new Set<string>();
-    for (const r of results) if (r.enriched) for (const k of Object.keys(r.enriched)) enrichedKeys.add(k);
-    enrichedKeys.delete("candidates");
+  // Internal-only fields that exist on the result object for UI bookkeeping
+  // but should never be exported to the user's spreadsheet.
+  const INTERNAL_FIELDS = new Set(["candidates", "_from_cache", "error_message"]);
 
+  const enrichedExportKeys = (): string[] => {
+    const keys = new Set<string>();
+    for (const r of results) {
+      if (!r.enriched) continue;
+      for (const k of Object.keys(r.enriched)) {
+        if (!INTERNAL_FIELDS.has(k)) keys.add(k);
+      }
+    }
+    return [...keys];
+  };
+
+  const downloadCsv = () => {
+    const keys = enrichedExportKeys();
     const outRows = rows.map((row, i) => {
       const enriched = (results[i]?.enriched ?? {}) as Record<string, unknown>;
       const merged: Record<string, unknown> = { ...row };
-      for (const k of enrichedKeys) merged[k] = enriched[k] ?? "";
+      for (const k of keys) merged[k] = enriched[k] ?? "";
       return merged;
     });
 
@@ -234,6 +297,89 @@ export default function HomePage() {
     const a = document.createElement("a");
     a.href = url;
     a.download = fileName.replace(/\.[^.]+$/, "") + "_cleansed.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Append enrichment columns to the original Excel workbook, preserving
+  // existing cell formatting and any other sheets the user had. If the
+  // upload was CSV (no original workbook), build a fresh xlsx instead.
+  const downloadExcel = () => {
+    const keys = enrichedExportKeys();
+    const fileBase = fileName.replace(/\.[^.]+$/, "");
+
+    let wb: XLSX.WorkBook;
+    let firstSheet: string;
+
+    if (originalWorkbookRef.current) {
+      // Append columns to the original sheet at the right edge.
+      wb = originalWorkbookRef.current;
+      firstSheet = wb.SheetNames[0];
+      const ws = wb.Sheets[firstSheet];
+      const range = XLSX.utils.decode_range(ws["!ref"] ?? "A1");
+      const startCol = range.e.c + 1;
+
+      const data: (string | number | null)[][] = [keys];
+      for (let i = 0; i < rows.length; i++) {
+        const enriched = (results[i]?.enriched ?? {}) as Record<string, unknown>;
+        data.push(keys.map((k) => {
+          const v = enriched[k];
+          if (v === null || v === undefined) return "";
+          if (typeof v === "number" || typeof v === "string") return v;
+          return String(v);
+        }));
+      }
+      XLSX.utils.sheet_add_aoa(ws, data, { origin: { r: 0, c: startCol } });
+
+      const newRange = XLSX.utils.decode_range(ws["!ref"] ?? "A1");
+      newRange.e.c = startCol + keys.length - 1;
+      newRange.e.r = Math.max(newRange.e.r, rows.length);
+      ws["!ref"] = XLSX.utils.encode_range(newRange);
+    } else {
+      // CSV-source: build a fresh workbook from the merged rows.
+      wb = XLSX.utils.book_new();
+      const outRows = rows.map((row, i) => {
+        const enriched = (results[i]?.enriched ?? {}) as Record<string, unknown>;
+        const merged: Record<string, unknown> = { ...row };
+        for (const k of keys) merged[k] = enriched[k] ?? "";
+        return merged;
+      });
+      const ws = XLSX.utils.json_to_sheet(outRows);
+      firstSheet = "Sheet1";
+      XLSX.utils.book_append_sheet(wb, ws, firstSheet);
+    }
+
+    const buffer = XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileBase + "_cleansed.xlsx";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // A minimal CSV with just the matched NZBNs — ready to paste into
+  // Mihari's bulk upload. Skips rows that didn't resolve.
+  const downloadMihariCsv = () => {
+    const out: { entity_name: string; nzbn: string }[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const r = results[i];
+      const enriched = r?.enriched as { nzbn_id?: string; legal_name?: string } | undefined;
+      if (r?.status === "matched" && enriched?.nzbn_id) {
+        out.push({ entity_name: enriched.legal_name ?? "", nzbn: enriched.nzbn_id });
+      }
+    }
+    if (out.length === 0) {
+      alert("No matched rows to send. Resolve some rows first.");
+      return;
+    }
+    const csv = Papa.unparse(out);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName.replace(/\.[^.]+$/, "") + "_mihari.csv";
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -313,6 +459,8 @@ export default function HomePage() {
           totalEst={totalEst}
           groups={fieldGroups}
           setGroups={setFieldGroups}
+          threshold={matchThreshold}
+          setThreshold={setMatchThreshold}
           onBack={() => setStage("map")}
           onStart={startProcessing}
         />
@@ -331,8 +479,11 @@ export default function HomePage() {
           onPauseResume={togglePause}
           onStop={stop}
           onDownload={downloadCsv}
+          onDownloadExcel={downloadExcel}
+          onDownloadMihari={downloadMihariCsv}
+          hasOriginalExcel={!!originalWorkbookRef.current}
           onRetry={retryIndices}
-          onPickCandidate={(idx, nzbn) => processRow(idx, nzbn)}
+          onPickCandidate={(idx, nzbn) => processRow(idx, nzbn).then(() => {})}
           onReject={rejectRow}
           onStartOver={() => {
             const ok = window.confirm(
@@ -396,38 +547,84 @@ function UploadStage({
   onDrop: (e: React.DragEvent) => void;
 }) {
   return (
-    <div
-      onDrop={onDrop}
-      onDragOver={(e) => e.preventDefault()}
-      style={{
-        border: "1px dashed var(--rule)",
-        padding: 64,
-        textAlign: "center",
-        background: "var(--panel)",
-      }}
-    >
-      <h2 style={{ fontSize: 22, margin: "0 0 12px" }}>Drop your file here, or</h2>
-      <button
-        onClick={() => fileInputRef.current?.click()}
-        style={btnPrimary}
+    <>
+      <PrivacyPanel />
+      <div
+        onDrop={onDrop}
+        onDragOver={(e) => e.preventDefault()}
+        style={{
+          border: "1px dashed var(--rule)",
+          padding: 64,
+          textAlign: "center",
+          background: "var(--panel)",
+        }}
       >
-        Choose file
-      </button>
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".csv,.tsv,.txt,.xlsx,.xls,.json"
-        style={{ display: "none" }}
-        onChange={onFile}
-      />
-      <p style={{ color: "var(--ink-dim)", marginTop: 28, fontSize: 13, lineHeight: 1.7 }}>
-        CSV (recommended), TSV, Excel (.xlsx), or JSON.
-        <br />
-        Header row in row 1. Up to {MAX_ROWS.toLocaleString()} rows.
-        <br />
-        <strong>Your file never leaves your browser.</strong> Only entity names, NZBNs, or company
-        numbers are sent to the NZBN register API for matching.
-      </p>
+        <h2 style={{ fontSize: 22, margin: "0 0 12px" }}>Drop your file here, or</h2>
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          style={btnPrimary}
+        >
+          Choose file
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv,.tsv,.txt,.xlsx,.xls,.json"
+          style={{ display: "none" }}
+          onChange={onFile}
+        />
+        <p style={{ color: "var(--ink-dim)", marginTop: 28, fontSize: 13, lineHeight: 1.7 }}>
+          CSV (recommended), TSV, Excel (.xlsx), or JSON. Header row in row 1.
+          Up to {MAX_ROWS.toLocaleString()} rows.
+        </p>
+      </div>
+    </>
+  );
+}
+
+function PrivacyPanel() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{
+      border: "1px solid var(--rule)",
+      background: "var(--bg)",
+      padding: "20px 24px",
+      marginBottom: 24,
+    }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+        <span lang="ja" style={{ fontFamily: "var(--font-mincho, serif)", fontSize: 16, color: "var(--ink-dim)", letterSpacing: "0.18em" }}>
+          安心
+        </span>
+        <strong style={{ fontSize: 14 }}>Your file stays on your computer.</strong>
+        <button
+          onClick={() => setOpen((o) => !o)}
+          style={{ background: "transparent", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 13, marginLeft: "auto", padding: 0 }}
+        >
+          {open ? "Hide details" : "What we send →"}
+        </button>
+      </div>
+      {open && (
+        <div style={{ marginTop: 14, fontSize: 13, color: "var(--ink-dim)", lineHeight: 1.7 }}>
+          <p style={{ margin: "0 0 10px" }}>
+            <strong style={{ color: "var(--ink)" }}>Sent to the NZBN register only:</strong> the
+            entity name, NZBN, or company number you map in the next step. Nothing else.
+          </p>
+          <p style={{ margin: "0 0 10px" }}>
+            <strong style={{ color: "var(--ink)" }}>Read but never sent:</strong> every other column
+            in your file — financials, customer codes, internal notes, addresses. Miseiri reads
+            these once to display the preview, then passes them through to the output unchanged.
+          </p>
+          <p style={{ margin: "0 0 10px" }}>
+            <strong style={{ color: "var(--ink)" }}>Never stored:</strong> nothing from your file is
+            written to a database, logged on our server, or sent to any third party other than
+            business.govt.nz (the official NZBN register). When you close the tab, it&rsquo;s gone.
+          </p>
+          <p style={{ margin: 0, color: "var(--ink-faint)" }}>
+            The only third-party calls happen when matching: each row sends one entity name (or NZBN)
+            to NZBN, and for some optional fields one or two follow-up lookups for that same entity.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -543,11 +740,13 @@ function tagFor(map: ColumnMap, header: string): string | null {
   return null;
 }
 
-function FieldsStage({ rowCount, totalEst, groups, setGroups, onBack, onStart }: {
+function FieldsStage({ rowCount, totalEst, groups, setGroups, threshold, setThreshold, onBack, onStart }: {
   rowCount: number;
   totalEst: number;
   groups: FieldGroups;
   setGroups: (g: FieldGroups) => void;
+  threshold: number;
+  setThreshold: (t: number) => void;
   onBack: () => void;
   onStart: () => void;
 }) {
@@ -605,6 +804,8 @@ function FieldsStage({ rowCount, totalEst, groups, setGroups, onBack, onStart }:
         ))}
       </div>
 
+      <ThresholdSlider value={threshold} onChange={setThreshold} />
+
       <div style={{ marginTop: 32, padding: "16px 18px", background: "var(--panel)", border: "1px solid var(--rule)" }}>
         <div style={{ color: "var(--ink-dim)", fontSize: 13 }}>Estimated time for {rowCount.toLocaleString()} rows:</div>
         <div style={{ fontSize: 24, fontWeight: 500, marginTop: 4 }}>{fmtTime(totalEst)}</div>
@@ -624,9 +825,87 @@ function FieldsStage({ rowCount, totalEst, groups, setGroups, onBack, onStart }:
   );
 }
 
+function ThresholdSlider({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const [showHelp, setShowHelp] = useState(false);
+  const pct = Math.round(value * 100);
+  const stance = value >= 0.9 ? "Strict"
+    : value >= 0.8 ? "Balanced (recommended)"
+    : value >= 0.7 ? "Permissive"
+    : "Very permissive";
+
+  return (
+    <div style={{ marginTop: 32, padding: "20px 22px", border: "1px solid var(--rule)" }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <div style={{ fontWeight: 500 }}>Confidence threshold</div>
+          <div style={{ color: "var(--ink-dim)", fontSize: 13, marginTop: 2 }}>
+            Currently <strong>{pct}%</strong> · {stance}
+          </div>
+        </div>
+        <button
+          onClick={() => setShowHelp((s) => !s)}
+          style={{ background: "transparent", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 13, padding: 0 }}
+        >
+          {showHelp ? "Hide examples" : "What does this mean?"}
+        </button>
+      </div>
+
+      <input
+        type="range"
+        min={0.6}
+        max={0.99}
+        step={0.01}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        style={{ width: "100%", marginTop: 12 }}
+      />
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--ink-faint)" }}>
+        <span>60% — very permissive</span>
+        <span>85% — balanced</span>
+        <span>99% — strict</span>
+      </div>
+
+      {showHelp && (
+        <div style={{ marginTop: 16, fontSize: 13, color: "var(--ink-dim)", lineHeight: 1.7 }}>
+          <p style={{ margin: "0 0 12px" }}>
+            Above this threshold a row auto-matches; below it, the row is sent to{" "}
+            <strong style={{ color: "var(--ink)" }}>Needs review</strong> for you to confirm.
+            Lower the threshold to auto-match more aggressively, raise it to be cautious.
+          </p>
+          <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+            <tbody>
+              <tr style={{ borderTop: "1px solid var(--rule-soft)" }}>
+                <td style={{ padding: "8px 0", width: 80 }}><strong>0.95+</strong></td>
+                <td>Near-identical names only — &ldquo;Fonterra Cooperative Group Ltd&rdquo; → exact register match.</td>
+              </tr>
+              <tr style={{ borderTop: "1px solid var(--rule-soft)" }}>
+                <td style={{ padding: "8px 0" }}><strong>0.85</strong></td>
+                <td>Default. Catches typos and minor word differences. &ldquo;Fontera Cooperative Group&rdquo; → matched.</td>
+              </tr>
+              <tr style={{ borderTop: "1px solid var(--rule-soft)" }}>
+                <td style={{ padding: "8px 0" }}><strong>0.75</strong></td>
+                <td>Catches partial names. &ldquo;Fontera Cooperative&rdquo; → matched (missing &ldquo;Group&rdquo;).</td>
+              </tr>
+              <tr style={{ borderTop: "1px solid var(--rule-soft)" }}>
+                <td style={{ padding: "8px 0" }}><strong>0.65</strong></td>
+                <td>Quite loose — single shared word. Use only when you plan to manually review every match.</td>
+              </tr>
+            </tbody>
+          </table>
+          <p style={{ margin: "12px 0 0", color: "var(--ink-faint)", fontSize: 12 }}>
+            Whatever the threshold, low-confidence candidates always show up in Needs review with the
+            full candidate list — you never lose visibility.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProcessStage({
   rows, columnMap, results, progressIdx, counts, pct, running, paused,
-  onPauseResume, onStop, onDownload, onStartOver, onRetry, onPickCandidate, onReject,
+  onPauseResume, onStop, onDownload, onDownloadExcel, onDownloadMihari, hasOriginalExcel,
+  onStartOver, onRetry, onPickCandidate, onReject,
 }: {
   rows: ParsedRow[];
   columnMap: ColumnMap;
@@ -639,11 +918,15 @@ function ProcessStage({
   onPauseResume: () => void;
   onStop: () => void;
   onDownload: () => void;
+  onDownloadExcel: () => void;
+  onDownloadMihari: () => void;
+  hasOriginalExcel: boolean;
   onStartOver: () => void;
   onRetry: (indices: number[]) => Promise<void>;
   onPickCandidate: (rowIndex: number, nzbn: string) => Promise<void>;
   onReject: (rowIndex: number) => void;
 }) {
+  const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
 
@@ -677,7 +960,43 @@ function ProcessStage({
           )}
           {!running && (
             <>
-              <button onClick={onDownload} style={btnPrimary}>Download CSV</button>
+              <div style={{ position: "relative" }}>
+                <button onClick={() => setDownloadMenuOpen((o) => !o)} style={btnPrimary}>
+                  Download ▾
+                </button>
+                {downloadMenuOpen && (
+                  <>
+                    <div onClick={() => setDownloadMenuOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 30 }} />
+                    <div style={{
+                      position: "absolute",
+                      top: "calc(100% + 4px)",
+                      right: 0,
+                      minWidth: 280,
+                      background: "var(--bg)",
+                      border: "1px solid var(--rule)",
+                      zIndex: 40,
+                      padding: 4,
+                    }}>
+                      <DownloadOption
+                        title="Excel (.xlsx)"
+                        sub={hasOriginalExcel ? "Appends columns to your original — formatting preserved" : "Adds columns to a fresh workbook"}
+                        onClick={() => { setDownloadMenuOpen(false); onDownloadExcel(); }}
+                      />
+                      <DownloadOption
+                        title="CSV"
+                        sub="Plain CSV with all enriched columns"
+                        onClick={() => { setDownloadMenuOpen(false); onDownload(); }}
+                      />
+                      <DownloadOption
+                        title="Mihari-ready CSV"
+                        sub={`${counts.matched} matched row${counts.matched === 1 ? "" : "s"} → entity_name, nzbn`}
+                        onClick={() => { setDownloadMenuOpen(false); onDownloadMihari(); }}
+                        disabled={counts.matched === 0}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
               <button onClick={onStartOver} style={btnSecondary}>New file</button>
             </>
           )}
@@ -869,6 +1188,34 @@ function Stat({ label, value, color, last, filter, active, setFilter }: {
     >
       <div style={{ fontSize: 12, color: "var(--ink-dim)" }}>{label}</div>
       <div style={{ fontSize: 32, fontWeight: 500, color, marginTop: 8, lineHeight: 1 }}>{value}</div>
+    </button>
+  );
+}
+
+function DownloadOption({ title, sub, onClick, disabled }: {
+  title: string;
+  sub: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        display: "block",
+        width: "100%",
+        textAlign: "left",
+        padding: "12px 14px",
+        background: "transparent",
+        border: "none",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.4 : 1,
+        borderBottom: "1px solid var(--rule-soft)",
+      }}
+    >
+      <div style={{ fontSize: 14, fontWeight: 500 }}>{title}</div>
+      <div style={{ fontSize: 12, color: "var(--ink-dim)", marginTop: 2 }}>{sub}</div>
     </button>
   );
 }

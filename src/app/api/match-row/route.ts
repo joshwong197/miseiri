@@ -12,6 +12,7 @@ interface MatchRowBody {
   nzbn?: unknown;
   companyNumber?: unknown;
   fields?: FieldGroups;
+  matchThreshold?: number;
 }
 
 // Defensive coercion: callers (XLSX rows, JSON files with numeric NZBNs,
@@ -114,7 +115,12 @@ export async function POST(req: NextRequest) {
       entityStatus: it.entityStatusDescription,
     }));
 
-    const outcome = decide({ query: inputName, candidates });
+    const threshold = typeof body.matchThreshold === "number"
+      && body.matchThreshold >= 0.5
+      && body.matchThreshold <= 1
+      ? body.matchThreshold
+      : undefined;
+    const outcome = decide({ query: inputName, candidates, highConfidenceThreshold: threshold });
 
     if (outcome.status !== "matched") {
       const enriched = buildEnrichedRow({
