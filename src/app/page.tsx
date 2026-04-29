@@ -5,8 +5,8 @@ import Papa from "papaparse";
 import * as XLSX from "xlsx";
 
 type Stage = "upload" | "map" | "fields" | "process" | "done";
-type RowStatus = "pending" | "processing" | "matched" | "needs_review" | "not_found" | "error";
-type Filter = "all" | "matched" | "needs_review" | "not_found" | "error";
+type RowStatus = "pending" | "processing" | "matched" | "needs_review" | "not_found" | "error" | "rejected";
+type Filter = "all" | "matched" | "needs_review" | "not_found" | "error" | "rejected";
 
 interface ParsedRow { [key: string]: string }
 
@@ -243,9 +243,26 @@ export default function HomePage() {
     review: results.filter((r) => r.status === "needs_review").length,
     notFound: results.filter((r) => r.status === "not_found").length,
     error: results.filter((r) => r.status === "error").length,
+    rejected: results.filter((r) => r.status === "rejected").length,
     pending: results.filter((r) => r.status === "pending").length,
     processing: results.filter((r) => r.status === "processing").length,
   }), [results]);
+
+  const rejectRow = (index: number) => {
+    setResults((prev) => prev.map((r) => {
+      if (r.index !== index) return r;
+      // Preserve only the candidates so the user can still pick a
+      // different one after rejecting. Everything else is cleared so
+      // the downloaded CSV won't carry the wrong match.
+      const enrichedAny = r.enriched as { candidates?: unknown } | undefined;
+      const candidates = enrichedAny?.candidates;
+      return {
+        ...r,
+        status: "rejected",
+        enriched: candidates ? ({ candidates } as Record<string, unknown>) : undefined,
+      };
+    }));
+  };
 
   const completedCount = results.length - counts.pending - counts.processing;
   const pct = results.length === 0 ? 0 : Math.round((completedCount / results.length) * 100);
@@ -316,6 +333,7 @@ export default function HomePage() {
           onDownload={downloadCsv}
           onRetry={retryIndices}
           onPickCandidate={(idx, nzbn) => processRow(idx, nzbn)}
+          onReject={rejectRow}
           onStartOver={() => {
             const ok = window.confirm(
               "Start a new file? Your current results will be cleared. Make sure you've downloaded the CSV if you want to keep them.",
@@ -608,13 +626,13 @@ function FieldsStage({ rowCount, totalEst, groups, setGroups, onBack, onStart }:
 
 function ProcessStage({
   rows, columnMap, results, progressIdx, counts, pct, running, paused,
-  onPauseResume, onStop, onDownload, onStartOver, onRetry, onPickCandidate,
+  onPauseResume, onStop, onDownload, onStartOver, onRetry, onPickCandidate, onReject,
 }: {
   rows: ParsedRow[];
   columnMap: ColumnMap;
   results: RowResult[];
   progressIdx: number;
-  counts: { matched: number; review: number; notFound: number; error: number; pending: number; processing: number };
+  counts: { matched: number; review: number; notFound: number; error: number; rejected: number; pending: number; processing: number };
   pct: number;
   running: boolean;
   paused: boolean;
@@ -624,6 +642,7 @@ function ProcessStage({
   onStartOver: () => void;
   onRetry: (indices: number[]) => Promise<void>;
   onPickCandidate: (rowIndex: number, nzbn: string) => Promise<void>;
+  onReject: (rowIndex: number) => void;
 }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
@@ -638,7 +657,7 @@ function ProcessStage({
   const inputNameFor = (rowIndex: number) =>
     (columnMap.name && rows[rowIndex]?.[columnMap.name]) || Object.values(rows[rowIndex] ?? {})[0] || "";
 
-  const canRetry = filter === "error" || filter === "not_found";
+  const canRetry = filter === "error" || filter === "not_found" || filter === "rejected";
 
   return (
     <div>
@@ -679,12 +698,13 @@ function ProcessStage({
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", border: "1px solid var(--rule)", marginBottom: 24 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", border: "1px solid var(--rule)", marginBottom: 24 }}>
         <Stat label="All rows" value={results.length} color="var(--ink)" filter="all" active={filter} setFilter={setFilter} />
         <Stat label="Matched" value={counts.matched} color="var(--green)" filter="matched" active={filter} setFilter={setFilter} />
         <Stat label="Needs review" value={counts.review} color="var(--amber)" filter="needs_review" active={filter} setFilter={setFilter} />
         <Stat label="Not found" value={counts.notFound} color="var(--ink-dim)" filter="not_found" active={filter} setFilter={setFilter} />
-        <Stat label="Errors" value={counts.error} color="var(--red)" filter="error" active={filter} setFilter={setFilter} last />
+        <Stat label="Errors" value={counts.error} color="var(--red)" filter="error" active={filter} setFilter={setFilter} />
+        <Stat label="Rejected" value={counts.rejected} color="var(--ink-dim)" filter="rejected" active={filter} setFilter={setFilter} last />
       </div>
 
       {filter !== "all" && (
@@ -726,7 +746,9 @@ function ProcessStage({
                 error_message?: string;
               };
               const candidates = enriched?.candidates ?? [];
-              const hasCandidates = candidates.length > 0 && (r.status === "needs_review" || r.status === "not_found");
+              const hasCandidates = candidates.length > 0
+                && (r.status === "needs_review" || r.status === "not_found" || r.status === "rejected");
+              const canReject = r.status === "matched" || r.status === "needs_review";
               const isOpen = expanded[r.index] ?? false;
               return (
                 <Fragment key={r.index}>
@@ -752,7 +774,16 @@ function ProcessStage({
                           {isOpen ? "Hide candidates" : `${candidates.length} candidate${candidates.length === 1 ? "" : "s"}`}
                         </button>
                       )}
-                      {r.status === "error" && !running && (
+                      {canReject && !running && (
+                        <button
+                          onClick={() => onReject(r.index)}
+                          style={{ ...linkBtn, color: "var(--red)" }}
+                          title="Clear this match. Candidates remain available so you can pick a different one."
+                        >
+                          Reject
+                        </button>
+                      )}
+                      {(r.status === "error" || r.status === "rejected") && !running && (
                         <button onClick={() => onRetry([r.index])} style={linkBtn}>Retry</button>
                       )}
                     </td>
@@ -857,6 +888,7 @@ function statusLabel(s: RowStatus): string {
     case "needs_review": return "Needs review";
     case "not_found": return "Not found";
     case "error": return "Error";
+    case "rejected": return "Rejected";
   }
 }
 
