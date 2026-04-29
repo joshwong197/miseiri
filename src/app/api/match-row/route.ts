@@ -3,7 +3,7 @@
 // the input beyond the upstream NZBN call.
 
 import { NextRequest, NextResponse } from "next/server";
-import { searchByName, searchByCompanyNumber, getEntity, getRoles, NzbnApiError } from "@/lib/nzbn/client";
+import { searchByName, searchByCompanyNumber, getEntity, getRoles, simplifyName, NzbnApiError } from "@/lib/nzbn/client";
 import { decide, type Candidate } from "@/lib/match";
 import { buildEnrichedRow, type FieldGroups, type EnrichedRow } from "@/lib/enrich";
 
@@ -75,8 +75,25 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const search = await searchByName(body.name.trim(), 10);
-    const candidates: Candidate[] = (search.items ?? []).map((it) => ({
+    const queryName = body.name.trim();
+    let search = await searchByName(queryName, 10);
+    let items = search.items ?? [];
+
+    // If the original returns nothing, retry once with a simplified
+    // version (drop "NZ One Time" prefix, take part after " - ", drop
+    // trailing year). Catches compound names like
+    // "Ideal Electrical - Head Office Rexel New Zealand".
+    let usedQuery = queryName;
+    if (items.length === 0) {
+      const simpler = simplifyName(queryName);
+      if (simpler) {
+        usedQuery = simpler;
+        search = await searchByName(simpler, 10);
+        items = search.items ?? [];
+      }
+    }
+
+    const candidates: Candidate[] = items.map((it) => ({
       nzbn: it.nzbn,
       entityName: it.entityName,
       tradingNames: it.tradingNames?.map((t) => t.name),
@@ -84,7 +101,7 @@ export async function POST(req: NextRequest) {
       entityStatus: it.entityStatusDescription,
     }));
 
-    const outcome = decide({ query: body.name.trim(), candidates });
+    const outcome = decide({ query: usedQuery, candidates });
 
     if (outcome.status !== "matched") {
       const enriched = buildEnrichedRow({
@@ -117,17 +134,17 @@ export async function POST(req: NextRequest) {
       }),
     );
   } catch (err) {
-    const status = err instanceof NzbnApiError ? err.status : 500;
     const message = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json(
-      buildEnrichedRow({
-        status: "error",
-        method: null,
-        confidence: 0,
-        entity: null,
-        fields,
-      }),
-      { status: status === 500 ? 200 : status, headers: { "x-error-message": message } },
-    );
+    const upstreamStatus = err instanceof NzbnApiError ? err.status : null;
+    const enriched = buildEnrichedRow({
+      status: "error",
+      method: null,
+      confidence: 0,
+      entity: null,
+      fields,
+    });
+    enriched.error_message = upstreamStatus ? `NZBN ${upstreamStatus}: ${message}` : message;
+    // Always 200 — the UI reads body.nzbn_status, not the HTTP status.
+    return NextResponse.json(enriched, { status: 200 });
   }
 }

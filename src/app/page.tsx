@@ -723,6 +723,7 @@ function ProcessStage({
                 legal_name?: string;
                 nzbn_id?: string;
                 candidates?: { nzbn: string; entityName: string; score: number }[];
+                error_message?: string;
               };
               const candidates = enriched?.candidates ?? [];
               const hasCandidates = candidates.length > 0 && (r.status === "needs_review" || r.status === "not_found");
@@ -732,7 +733,14 @@ function ProcessStage({
                   <tr style={{ background: r.status === "processing" ? "var(--panel)" : "transparent" }}>
                     <td style={{ ...tdStyle, color: "var(--ink-faint)", width: 60 }}>{r.index + 1}</td>
                     <td style={tdStyle}>{inputNameFor(r.index)}</td>
-                    <td style={tdStyle}>{enriched?.legal_name ?? "—"}</td>
+                    <td style={tdStyle}>
+                      {enriched?.legal_name ?? "—"}
+                      {r.status === "error" && enriched?.error_message && (
+                        <div style={{ fontSize: 11, color: "var(--red)", marginTop: 4, fontStyle: "italic" }}>
+                          {enriched.error_message}
+                        </div>
+                      )}
+                    </td>
                     <td style={{ ...tdStyle, color: "var(--ink-dim)" }}>{enriched?.nzbn_id ?? "—"}</td>
                     <td style={{ ...tdStyle, color: statusColor(r.status) }}>{statusLabel(r.status)}</td>
                     <td style={{ ...tdStyle, textAlign: "right", whiteSpace: "nowrap" }}>

@@ -39,11 +39,15 @@ async function fetchWithRetry(url: string, attempt = 0): Promise<Response> {
   return res;
 }
 
+const EMPTY_SEARCH: NzbnSearchResponse = { totalResults: 0, page: 1, pageSize: 0, items: [] };
+
 export async function searchByName(searchTerm: string, pageSize = 10): Promise<NzbnSearchResponse> {
   const url = new URL(`${BASE_URL}/entities`);
   url.searchParams.set("search-term", searchTerm);
   url.searchParams.set("page-size", String(pageSize));
   const res = await fetchWithRetry(url.toString());
+  // 400/404 → "we can't search for that" — treat as no results, not an error.
+  if (res.status === 400 || res.status === 404) return EMPTY_SEARCH;
   if (!res.ok) throw new NzbnApiError(res.status, `Search failed: ${res.statusText}`);
   return res.json();
 }
@@ -53,8 +57,36 @@ export async function searchByCompanyNumber(companyNumber: string): Promise<Nzbn
   url.searchParams.set("entity-identifier", companyNumber);
   url.searchParams.set("page-size", "5");
   const res = await fetchWithRetry(url.toString());
+  if (res.status === 400 || res.status === 404) return EMPTY_SEARCH;
   if (!res.ok) throw new NzbnApiError(res.status, `Company-number search failed: ${res.statusText}`);
   return res.json();
+}
+
+/**
+ * Strip common compound-name patterns from a customer's name string so
+ * we have a cleaner query for the register. We try the original first
+ * and fall back to a simplified query only when the original returns
+ * no candidates.
+ *
+ * Heuristics observed in real ledgers:
+ *   "Foo Trading - Head Office Foo Legal Ltd"
+ *   "Foo Trading Name Bar Legal Society Ltd"
+ *   "NZ One Time Customer"  (junk — strip "NZ One Time" prefix)
+ */
+export function simplifyName(name: string): string | null {
+  let s = name.trim();
+  // Take the part after " - " when present, that is usually the legal name.
+  if (s.includes(" - ")) {
+    const after = s.split(" - ").slice(-1)[0].trim();
+    // Strip a leading "Head Office" tag.
+    s = after.replace(/^head\s+office\s+/i, "").trim();
+  }
+  // Drop a leading "NZ One Time" prefix used by many AR systems.
+  s = s.replace(/^nz\s+one\s+time\s+/i, "").trim();
+  // Drop trailing year (e.g. "Ltd 2022" or "Indigo Skies 2022 Ltd").
+  s = s.replace(/\b(19|20)\d{2}\b/g, "").replace(/\s{2,}/g, " ").trim();
+  if (!s || s.toLowerCase() === name.trim().toLowerCase()) return null;
+  return s;
 }
 
 export async function getEntity(nzbn: string): Promise<NzbnEntity> {

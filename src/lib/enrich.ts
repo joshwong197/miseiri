@@ -41,6 +41,8 @@ export interface EnrichedRow {
   // candidates for needs_review
   candidates?: { nzbn: string; entityName: string; score: number }[];
   notes?: string;
+  // populated when status === "error" so the user can see the cause
+  error_message?: string;
 }
 
 export function buildEnrichedRow(opts: {
