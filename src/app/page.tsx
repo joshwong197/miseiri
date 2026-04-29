@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { Fragment, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 
 type Stage = "upload" | "map" | "fields" | "process" | "done";
 type RowStatus = "pending" | "processing" | "matched" | "needs_review" | "not_found" | "error";
+type Filter = "all" | "matched" | "needs_review" | "not_found" | "error";
 
 interface ParsedRow { [key: string]: string }
 
@@ -140,6 +141,32 @@ export default function HomePage() {
 
   const totalEst = useMemo(() => Math.ceil(rows.length * estTimePerRow), [rows.length, estTimePerRow]);
 
+  // Process a single row. Used by the initial run, the retry button, and
+  // the candidate-picker. `overrideNzbn` lets a manual pick bypass the
+  // search step and look up directly.
+  const processRow = async (index: number, overrideNzbn?: string): Promise<void> => {
+    setResults((prev) => prev.map((r) => (r.index === index ? { ...r, status: "processing" } : r)));
+    const row = rows[index];
+    const payload = {
+      name: columnMap.name ? row[columnMap.name] : "",
+      nzbn: overrideNzbn ?? (columnMap.nzbn ? row[columnMap.nzbn] : undefined),
+      companyNumber: columnMap.companyNumber ? row[columnMap.companyNumber] : undefined,
+      fields: fieldGroups,
+    };
+    try {
+      const res = await fetch("/api/match-row", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      const status = (data?.nzbn_status ?? "error") as RowStatus;
+      setResults((prev) => prev.map((r) => (r.index === index ? { ...r, status, enriched: data } : r)));
+    } catch (err) {
+      setResults((prev) => prev.map((r) => (r.index === index ? { ...r, status: "error", error: String(err) } : r)));
+    }
+  };
+
   const startProcessing = async () => {
     setStage("process");
     setResults(rows.map((_, i) => ({ index: i, status: "pending" as RowStatus })));
@@ -155,28 +182,7 @@ export default function HomePage() {
       if (abortRef.current) break;
 
       setProgressIdx(i);
-      setResults((prev) => prev.map((r) => (r.index === i ? { ...r, status: "processing" } : r)));
-
-      const row = rows[i];
-      const payload = {
-        name: columnMap.name ? row[columnMap.name] : "",
-        nzbn: columnMap.nzbn ? row[columnMap.nzbn] : undefined,
-        companyNumber: columnMap.companyNumber ? row[columnMap.companyNumber] : undefined,
-        fields: fieldGroups,
-      };
-
-      try {
-        const res = await fetch("/api/match-row", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const data = await res.json();
-        const status = (data?.nzbn_status ?? "error") as RowStatus;
-        setResults((prev) => prev.map((r) => (r.index === i ? { ...r, status, enriched: data } : r)));
-      } catch (err) {
-        setResults((prev) => prev.map((r) => (r.index === i ? { ...r, status: "error", error: String(err) } : r)));
-      }
+      await processRow(i);
 
       if (i < rows.length - 1 && !abortRef.current) {
         await new Promise((r) => setTimeout(r, ROW_DELAY_MS));
@@ -185,6 +191,19 @@ export default function HomePage() {
 
     setRunning(false);
     setStage("done");
+  };
+
+  const retryIndices = async (indices: number[]) => {
+    if (indices.length === 0) return;
+    setRunning(true);
+    abortRef.current = false;
+    for (const idx of indices) {
+      if (abortRef.current) break;
+      setProgressIdx(idx);
+      await processRow(idx);
+      await new Promise((r) => setTimeout(r, ROW_DELAY_MS));
+    }
+    setRunning(false);
   };
 
   const togglePause = () => {
@@ -285,6 +304,7 @@ export default function HomePage() {
       {(stage === "process" || stage === "done") && (
         <ProcessStage
           rows={rows}
+          columnMap={columnMap}
           results={results}
           progressIdx={progressIdx}
           counts={counts}
@@ -294,7 +314,13 @@ export default function HomePage() {
           onPauseResume={togglePause}
           onStop={stop}
           onDownload={downloadCsv}
+          onRetry={retryIndices}
+          onPickCandidate={(idx, nzbn) => processRow(idx, nzbn)}
           onStartOver={() => {
+            const ok = window.confirm(
+              "Start a new file? Your current results will be cleared. Make sure you've downloaded the CSV if you want to keep them.",
+            );
+            if (!ok) return;
             setStage("upload");
             setRows([]);
             setResults([]);
@@ -581,10 +607,11 @@ function FieldsStage({ rowCount, totalEst, groups, setGroups, onBack, onStart }:
 }
 
 function ProcessStage({
-  rows, results, progressIdx, counts, pct, running, paused,
-  onPauseResume, onStop, onDownload, onStartOver,
+  rows, columnMap, results, progressIdx, counts, pct, running, paused,
+  onPauseResume, onStop, onDownload, onStartOver, onRetry, onPickCandidate,
 }: {
   rows: ParsedRow[];
+  columnMap: ColumnMap;
   results: RowResult[];
   progressIdx: number;
   counts: { matched: number; review: number; notFound: number; error: number; pending: number; processing: number };
@@ -595,7 +622,24 @@ function ProcessStage({
   onStop: () => void;
   onDownload: () => void;
   onStartOver: () => void;
+  onRetry: (indices: number[]) => Promise<void>;
+  onPickCandidate: (rowIndex: number, nzbn: string) => Promise<void>;
 }) {
+  const [filter, setFilter] = useState<Filter>("all");
+  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
+
+  const filtered = useMemo(() => {
+    if (filter === "all") return results;
+    return results.filter((r) => r.status === filter);
+  }, [filter, results]);
+
+  const filteredIndices = useMemo(() => filtered.map((r) => r.index), [filtered]);
+
+  const inputNameFor = (rowIndex: number) =>
+    (columnMap.name && rows[rowIndex]?.[columnMap.name]) || Object.values(rows[rowIndex] ?? {})[0] || "";
+
+  const canRetry = filter === "error" || filter === "not_found";
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
@@ -635,14 +679,33 @@ function ProcessStage({
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", border: "1px solid var(--rule)", marginBottom: 24 }}>
-        <Stat label="Matched" value={counts.matched} color="var(--green)" />
-        <Stat label="Needs review" value={counts.review} color="var(--amber)" />
-        <Stat label="Not found" value={counts.notFound} color="var(--ink-dim)" />
-        <Stat label="Errors" value={counts.error} color="var(--red)" last />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", border: "1px solid var(--rule)", marginBottom: 24 }}>
+        <Stat label="All rows" value={results.length} color="var(--ink)" filter="all" active={filter} setFilter={setFilter} />
+        <Stat label="Matched" value={counts.matched} color="var(--green)" filter="matched" active={filter} setFilter={setFilter} />
+        <Stat label="Needs review" value={counts.review} color="var(--amber)" filter="needs_review" active={filter} setFilter={setFilter} />
+        <Stat label="Not found" value={counts.notFound} color="var(--ink-dim)" filter="not_found" active={filter} setFilter={setFilter} />
+        <Stat label="Errors" value={counts.error} color="var(--red)" filter="error" active={filter} setFilter={setFilter} last />
       </div>
 
-      <div style={{ maxHeight: 480, overflow: "auto", border: "1px solid var(--rule-soft)" }}>
+      {filter !== "all" && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, padding: "10px 14px", background: "var(--panel)", border: "1px solid var(--rule-soft)" }}>
+          <div style={{ fontSize: 13 }}>
+            Showing <strong>{filtered.length}</strong> {statusLabel(filter as RowStatus).toLowerCase()} row{filtered.length === 1 ? "" : "s"}
+            <button onClick={() => setFilter("all")} style={{ ...linkBtn, marginLeft: 12 }}>Clear filter</button>
+          </div>
+          {canRetry && filtered.length > 0 && (
+            <button
+              onClick={() => onRetry(filteredIndices)}
+              disabled={running}
+              style={{ ...btnSecondary, opacity: running ? 0.4 : 1 }}
+            >
+              Retry these {filtered.length} row{filtered.length === 1 ? "" : "s"}
+            </button>
+          )}
+        </div>
+      )}
+
+      <div style={{ maxHeight: 540, overflow: "auto", border: "1px solid var(--rule-soft)" }}>
         <table style={{ width: "100%", fontSize: 13 }}>
           <thead style={{ position: "sticky", top: 0, background: "var(--bg)" }}>
             <tr style={{ background: "var(--panel)" }}>
@@ -651,18 +714,86 @@ function ProcessStage({
               <th style={thStyle}>Matched legal name</th>
               <th style={thStyle}>NZBN</th>
               <th style={thStyle}>Status</th>
+              <th style={thStyle}></th>
             </tr>
           </thead>
           <tbody>
-            {results.map((r, i) => (
-              <tr key={r.index} style={{ background: r.status === "processing" ? "var(--panel)" : "transparent" }}>
-                <td style={{ ...tdStyle, color: "var(--ink-faint)", width: 60 }}>{r.index + 1}</td>
-                <td style={tdStyle}>{Object.values(rows[i] ?? {})[0] ?? ""}</td>
-                <td style={tdStyle}>{(r.enriched as { legal_name?: string })?.legal_name ?? "—"}</td>
-                <td style={{ ...tdStyle, color: "var(--ink-dim)" }}>{(r.enriched as { nzbn_id?: string })?.nzbn_id ?? "—"}</td>
-                <td style={{ ...tdStyle, color: statusColor(r.status) }}>{statusLabel(r.status)}</td>
+            {filtered.map((r) => {
+              const enriched = r.enriched as undefined | {
+                legal_name?: string;
+                nzbn_id?: string;
+                candidates?: { nzbn: string; entityName: string; score: number }[];
+              };
+              const candidates = enriched?.candidates ?? [];
+              const hasCandidates = candidates.length > 0 && (r.status === "needs_review" || r.status === "not_found");
+              const isOpen = expanded[r.index] ?? false;
+              return (
+                <Fragment key={r.index}>
+                  <tr style={{ background: r.status === "processing" ? "var(--panel)" : "transparent" }}>
+                    <td style={{ ...tdStyle, color: "var(--ink-faint)", width: 60 }}>{r.index + 1}</td>
+                    <td style={tdStyle}>{inputNameFor(r.index)}</td>
+                    <td style={tdStyle}>{enriched?.legal_name ?? "—"}</td>
+                    <td style={{ ...tdStyle, color: "var(--ink-dim)" }}>{enriched?.nzbn_id ?? "—"}</td>
+                    <td style={{ ...tdStyle, color: statusColor(r.status) }}>{statusLabel(r.status)}</td>
+                    <td style={{ ...tdStyle, textAlign: "right", whiteSpace: "nowrap" }}>
+                      {hasCandidates && (
+                        <button
+                          onClick={() => setExpanded((m) => ({ ...m, [r.index]: !isOpen }))}
+                          style={linkBtn}
+                        >
+                          {isOpen ? "Hide candidates" : `${candidates.length} candidate${candidates.length === 1 ? "" : "s"}`}
+                        </button>
+                      )}
+                      {r.status === "error" && !running && (
+                        <button onClick={() => onRetry([r.index])} style={linkBtn}>Retry</button>
+                      )}
+                    </td>
+                  </tr>
+                  {hasCandidates && isOpen && (
+                    <tr>
+                      <td colSpan={6} style={{ padding: 0, background: "var(--panel)" }}>
+                        <div style={{ padding: "12px 16px 16px 76px" }}>
+                          <div style={{ fontSize: 12, color: "var(--ink-dim)", marginBottom: 8 }}>
+                            Pick the candidate that matches your record. We&rsquo;ll re-fetch the
+                            full entity details and update this row.
+                          </div>
+                          <table style={{ width: "100%", fontSize: 13 }}>
+                            <tbody>
+                              {candidates.map((c) => (
+                                <tr key={c.nzbn}>
+                                  <td style={{ padding: "6px 0", width: "55%" }}>{c.entityName}</td>
+                                  <td style={{ padding: "6px 0", color: "var(--ink-dim)", fontVariantNumeric: "tabular-nums" }}>NZBN {c.nzbn}</td>
+                                  <td style={{ padding: "6px 0", color: "var(--ink-dim)", fontVariantNumeric: "tabular-nums" }}>score {c.score.toFixed(2)}</td>
+                                  <td style={{ padding: "6px 0", textAlign: "right" }}>
+                                    <button
+                                      onClick={async () => {
+                                        await onPickCandidate(r.index, c.nzbn);
+                                        setExpanded((m) => ({ ...m, [r.index]: false }));
+                                      }}
+                                      disabled={running}
+                                      style={{ ...btnSecondary, padding: "6px 14px", fontSize: 12, opacity: running ? 0.4 : 1 }}
+                                    >
+                                      Use this one
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+            {filtered.length === 0 && (
+              <tr>
+                <td colSpan={6} style={{ ...tdStyle, color: "var(--ink-faint)", textAlign: "center", padding: "32px 0" }}>
+                  No rows in this view.
+                </td>
               </tr>
-            ))}
+            )}
           </tbody>
         </table>
       </div>
@@ -670,12 +801,36 @@ function ProcessStage({
   );
 }
 
-function Stat({ label, value, color, last }: { label: string; value: number; color: string; last?: boolean }) {
+function Stat({ label, value, color, last, filter, active, setFilter }: {
+  label: string;
+  value: number;
+  color: string;
+  last?: boolean;
+  filter: Filter;
+  active: Filter;
+  setFilter: (f: Filter) => void;
+}) {
+  const isActive = active === filter;
+  const clickable = value > 0 || filter === "all";
   return (
-    <div style={{ padding: "20px 24px", borderRight: last ? "none" : "1px solid var(--rule)" }}>
+    <button
+      onClick={() => clickable && setFilter(filter)}
+      disabled={!clickable}
+      style={{
+        padding: "20px 24px",
+        borderRight: last ? "none" : "1px solid var(--rule)",
+        border: "none",
+        borderTop: isActive ? `3px solid ${color}` : "3px solid transparent",
+        background: isActive ? "var(--panel)" : "transparent",
+        textAlign: "left",
+        cursor: clickable ? "pointer" : "default",
+        opacity: clickable ? 1 : 0.5,
+        transition: "background 100ms ease",
+      }}
+    >
       <div style={{ fontSize: 12, color: "var(--ink-dim)" }}>{label}</div>
       <div style={{ fontSize: 32, fontWeight: 500, color, marginTop: 8, lineHeight: 1 }}>{value}</div>
-    </div>
+    </button>
   );
 }
 
@@ -696,6 +851,16 @@ function statusLabel(s: RowStatus): string {
     case "error": return "Error";
   }
 }
+
+const linkBtn: React.CSSProperties = {
+  background: "transparent",
+  border: "none",
+  color: "var(--accent)",
+  fontSize: 13,
+  cursor: "pointer",
+  padding: "0 6px",
+  textDecoration: "underline",
+};
 
 const btnPrimary: React.CSSProperties = {
   padding: "10px 22px",

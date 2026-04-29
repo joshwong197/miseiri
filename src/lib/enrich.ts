@@ -20,7 +20,6 @@ export interface EnrichedRow {
   nzbn_status: MatchStatus;
   nzbn_id: string | null;
   legal_name: string | null;
-  corrected_legal_name: string | null;
   entity_type: string | null;
   entity_status: string | null;
   confidence: number;
@@ -58,7 +57,6 @@ export function buildEnrichedRow(opts: {
     nzbn_status: status,
     nzbn_id: entity?.nzbn ?? null,
     legal_name: entity?.entityName ?? null,
-    corrected_legal_name: entity?.entityName ?? null,
     entity_type: entity?.entityTypeDescription ?? null,
     entity_status: entity?.entityStatusDescription ?? null,
     confidence,
