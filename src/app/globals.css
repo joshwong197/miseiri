@@ -1,0 +1,35 @@
+:root {
+  --bg: #fafafa;
+  --panel: #f0f0f0;
+  --ink: #1a1a1a;
+  --ink-dim: #5a5a5a;
+  --ink-faint: #9a9a9a;
+  --rule: #d8d8d8;
+  --rule-soft: #e8e8e8;
+  --accent: #2952b3;
+  --green: #2e7d32;
+  --amber: #c97a00;
+  --red: #b82f21;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+button { font: inherit; }
+
+input, select, textarea, button {
+  font-family: inherit;
+}
+
+a { color: var(--accent); }
+
+table { border-collapse: collapse; }
