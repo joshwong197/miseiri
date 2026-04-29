@@ -86,6 +86,12 @@ export function simplifyName(name: string): string | null {
   // Drop trailing year (e.g. "Ltd 2022" or "Indigo Skies 2022 Ltd").
   s = s.replace(/\b(19|20)\d{2}\b/g, "").replace(/\s{2,}/g, " ").trim();
   if (!s || s.toLowerCase() === name.trim().toLowerCase()) return null;
+  // Reject simplifications that collapse to a generic single token —
+  // e.g. "NZ One Time Staff" → "Staff" would happily match STAFFY LIMITED
+  // because the only token is fully contained. Require at least two
+  // meaningful tokens or a long enough string to make scoring honest.
+  const tokenCount = s.split(/\s+/).filter(Boolean).length;
+  if (tokenCount < 2 && s.length < 10) return null;
   return s;
 }
 
