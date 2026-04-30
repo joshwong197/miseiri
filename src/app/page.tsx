@@ -1,9 +1,20 @@
 "use client";
 
-import { Fragment, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { normalizeForCompare } from "@/lib/match/normalize";
+import {
+  loadOverrides,
+  saveOverrides,
+  lookupOverride,
+  addOverride,
+  removeOverride,
+  exportJson,
+  type OverrideMap,
+} from "@/lib/overrides";
+import { tokenDiff, type DiffPart } from "@/lib/diff";
 
 type Stage = "upload" | "map" | "fields" | "process" | "done";
 type RowStatus = "pending" | "processing" | "matched" | "needs_review" | "not_found" | "error" | "rejected";
@@ -54,6 +65,7 @@ export default function HomePage() {
     shareholders: false,
   });
   const [matchThreshold, setMatchThreshold] = useState(0.85);
+  const [overrides, setOverrides] = useState<OverrideMap>({});
   const [results, setResults] = useState<RowResult[]>([]);
   const [progressIdx, setProgressIdx] = useState(0);
   const [running, setRunning] = useState(false);
@@ -68,6 +80,16 @@ export default function HomePage() {
   // Per-row dedupe key (normalized name) computed once at upload. Rows
   // sharing the same key are processed once; the result is propagated.
   const dedupeKeysRef = useRef<string[]>([]);
+
+  // Load any overrides saved in this tab session on mount.
+  useEffect(() => {
+    setOverrides(loadOverrides());
+  }, []);
+
+  const updateOverrides = (next: OverrideMap) => {
+    setOverrides(next);
+    saveOverrides(next);
+  };
 
   const parseFile = (file: File) => {
     setFileName(file.name);
@@ -158,9 +180,18 @@ export default function HomePage() {
   const processRow = async (index: number, overrideNzbn?: string): Promise<Record<string, unknown> | null> => {
     setResults((prev) => prev.map((r) => (r.index === index ? { ...r, status: "processing" } : r)));
     const row = rows[index];
+    const inputName = columnMap.name ? row[columnMap.name] : "";
+
+    // Apply user override dictionary before talking to the API. The
+    // backend treats this as a direct NZBN lookup; we re-tag the
+    // match_method client-side so the export shows it came from an
+    // override, not a fluke exact name match.
+    const dictHit = !overrideNzbn && inputName ? lookupOverride(overrides, inputName) : null;
+    const effectiveNzbn = overrideNzbn ?? dictHit?.nzbn ?? (columnMap.nzbn ? row[columnMap.nzbn] : undefined);
+
     const payload = {
-      name: columnMap.name ? row[columnMap.name] : "",
-      nzbn: overrideNzbn ?? (columnMap.nzbn ? row[columnMap.nzbn] : undefined),
+      name: inputName,
+      nzbn: effectiveNzbn,
       companyNumber: columnMap.companyNumber ? row[columnMap.companyNumber] : undefined,
       fields: fieldGroups,
       matchThreshold,
@@ -172,6 +203,9 @@ export default function HomePage() {
         body: JSON.stringify(payload),
       });
       const data = await res.json();
+      if (dictHit && data && data.nzbn_status === "matched") {
+        data.match_method = "user_override";
+      }
       const status = (data?.nzbn_status ?? "error") as RowStatus;
       setResults((prev) => prev.map((r) => (r.index === index ? { ...r, status, enriched: data } : r)));
       return data;
@@ -416,13 +450,16 @@ export default function HomePage() {
   return (
     <main style={{ maxWidth: 1100, margin: "0 auto", padding: "48px 24px 96px" }}>
       <header style={{ marginBottom: 48 }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap" }}>
-          <h1 style={{ fontSize: 40, fontWeight: 600, letterSpacing: "-0.02em", margin: 0 }}>
-            Miseiri
-          </h1>
-          <span lang="ja" style={{ fontSize: 22, letterSpacing: "0.18em", color: "var(--ink-dim)" }}>
-            見整理
-          </span>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap" }}>
+            <h1 style={{ fontSize: 40, fontWeight: 600, letterSpacing: "-0.02em", margin: 0 }}>
+              Miseiri
+            </h1>
+            <span lang="ja" style={{ fontSize: 22, letterSpacing: "0.18em", color: "var(--ink-dim)" }}>
+              見整理
+            </span>
+          </div>
+          <Link href="/lookup" style={{ color: "var(--accent)", fontSize: 13 }}>Single name lookup →</Link>
         </div>
         <p style={{ color: "var(--ink-dim)", marginTop: 8, maxWidth: 640 }}>
           Upload a spreadsheet of customer or supplier names. Miseiri resolves each one against the
@@ -461,6 +498,8 @@ export default function HomePage() {
           setGroups={setFieldGroups}
           threshold={matchThreshold}
           setThreshold={setMatchThreshold}
+          overrides={overrides}
+          setOverrides={updateOverrides}
           onBack={() => setStage("map")}
           onStart={startProcessing}
         />
@@ -476,6 +515,8 @@ export default function HomePage() {
           pct={pct}
           running={running}
           paused={paused}
+          overrides={overrides}
+          onAddOverride={(inputName, nzbn) => updateOverrides(addOverride(overrides, inputName, nzbn))}
           onPauseResume={togglePause}
           onStop={stop}
           onDownload={downloadCsv}
@@ -740,13 +781,15 @@ function tagFor(map: ColumnMap, header: string): string | null {
   return null;
 }
 
-function FieldsStage({ rowCount, totalEst, groups, setGroups, threshold, setThreshold, onBack, onStart }: {
+function FieldsStage({ rowCount, totalEst, groups, setGroups, threshold, setThreshold, overrides, setOverrides, onBack, onStart }: {
   rowCount: number;
   totalEst: number;
   groups: FieldGroups;
   setGroups: (g: FieldGroups) => void;
   threshold: number;
   setThreshold: (t: number) => void;
+  overrides: OverrideMap;
+  setOverrides: (m: OverrideMap) => void;
   onBack: () => void;
   onStart: () => void;
 }) {
@@ -805,6 +848,8 @@ function FieldsStage({ rowCount, totalEst, groups, setGroups, threshold, setThre
       </div>
 
       <ThresholdSlider value={threshold} onChange={setThreshold} />
+
+      <OverridesPanel overrides={overrides} setOverrides={setOverrides} />
 
       <div style={{ marginTop: 32, padding: "16px 18px", background: "var(--panel)", border: "1px solid var(--rule)" }}>
         <div style={{ color: "var(--ink-dim)", fontSize: 13 }}>Estimated time for {rowCount.toLocaleString()} rows:</div>
@@ -904,6 +949,7 @@ function ThresholdSlider({ value, onChange }: { value: number; onChange: (v: num
 
 function ProcessStage({
   rows, columnMap, results, progressIdx, counts, pct, running, paused,
+  overrides, onAddOverride,
   onPauseResume, onStop, onDownload, onDownloadExcel, onDownloadMihari, hasOriginalExcel,
   onStartOver, onRetry, onPickCandidate, onReject,
 }: {
@@ -915,6 +961,8 @@ function ProcessStage({
   pct: number;
   running: boolean;
   paused: boolean;
+  overrides: OverrideMap;
+  onAddOverride: (inputName: string, nzbn: string) => void;
   onPauseResume: () => void;
   onStop: () => void;
   onDownload: () => void;
@@ -1061,6 +1109,7 @@ function ProcessStage({
               const enriched = r.enriched as undefined | {
                 legal_name?: string;
                 nzbn_id?: string;
+                match_method?: string;
                 candidates?: { nzbn: string; entityName: string; score: number }[];
                 error_message?: string;
               };
@@ -1069,6 +1118,14 @@ function ProcessStage({
                 && (r.status === "needs_review" || r.status === "not_found" || r.status === "rejected");
               const canReject = r.status === "matched" || r.status === "needs_review";
               const isOpen = expanded[r.index] ?? false;
+              const inputName = inputNameFor(r.index);
+              const matchedName = enriched?.legal_name;
+              const showDiff = r.status === "matched" && !!matchedName && !!inputName
+                && normalizeForCompare(String(inputName)) !== normalizeForCompare(matchedName);
+              const overrideKey = inputName ? normalizeForCompare(String(inputName)) : "";
+              const isOverridden = !!overrideKey && !!overrides[overrideKey];
+              const canSaveOverride = r.status === "matched" && !!enriched?.nzbn_id && !!overrideKey && !isOverridden
+                && enriched.match_method !== "user_override";
               return (
                 <Fragment key={r.index}>
                   <tr style={{ background: r.status === "processing" ? "var(--panel)" : "transparent" }}>
@@ -1076,6 +1133,12 @@ function ProcessStage({
                     <td style={tdStyle}>{inputNameFor(r.index)}</td>
                     <td style={tdStyle}>
                       {enriched?.legal_name ?? "—"}
+                      {enriched?.match_method === "user_override" && (
+                        <span style={{ marginLeft: 8, fontSize: 10, padding: "1px 6px", border: "1px solid var(--accent)", color: "var(--accent)" }}>
+                          override
+                        </span>
+                      )}
+                      {showDiff && <DiffRow input={String(inputName)} matched={matchedName!} />}
                       {r.status === "error" && enriched?.error_message && (
                         <div style={{ fontSize: 11, color: "var(--red)", marginTop: 4, fontStyle: "italic" }}>
                           {enriched.error_message}
@@ -1091,6 +1154,15 @@ function ProcessStage({
                           style={linkBtn}
                         >
                           {isOpen ? "Hide candidates" : `${candidates.length} candidate${candidates.length === 1 ? "" : "s"}`}
+                        </button>
+                      )}
+                      {canSaveOverride && !running && (
+                        <button
+                          onClick={() => onAddOverride(String(inputName), enriched!.nzbn_id!)}
+                          style={linkBtn}
+                          title="Remember this match. Future runs in this tab will auto-resolve identical input names."
+                        >
+                          Save override
                         </button>
                       )}
                       {canReject && !running && (
@@ -1289,3 +1361,167 @@ const tdStyle: React.CSSProperties = {
   padding: "10px 14px",
   borderBottom: "1px solid var(--rule-soft)",
 };
+
+function DiffRow({ input, matched }: { input: string; matched: string }) {
+  const { left, right } = useMemo(() => tokenDiff(input, matched), [input, matched]);
+  return (
+    <div style={{ marginTop: 6, fontSize: 11, color: "var(--ink-faint)", lineHeight: 1.5 }}>
+      <div>
+        <span style={{ display: "inline-block", width: 56, color: "var(--ink-faint)" }}>input</span>
+        {renderDiff(left)}
+      </div>
+      <div>
+        <span style={{ display: "inline-block", width: 56, color: "var(--ink-faint)" }}>matched</span>
+        {renderDiff(right)}
+      </div>
+    </div>
+  );
+}
+
+function renderDiff(parts: DiffPart[]) {
+  return parts.map((p, i) => {
+    if (p.kind === "same") {
+      return <span key={i} style={{ color: "var(--ink-dim)" }}>{p.text}{spaceAfter(p.text, parts[i + 1]?.text)}</span>;
+    }
+    if (p.kind === "removed") {
+      return <span key={i} style={{ background: "rgba(184,47,33,0.15)", color: "var(--red)", textDecoration: "line-through" }}>{p.text}{spaceAfter(p.text, parts[i + 1]?.text)}</span>;
+    }
+    return <span key={i} style={{ background: "rgba(46,125,50,0.15)", color: "var(--green)", fontWeight: 500 }}>{p.text}{spaceAfter(p.text, parts[i + 1]?.text)}</span>;
+  });
+}
+
+function spaceAfter(curr: string, next: string | undefined): string {
+  if (!next) return "";
+  // No space before/after pure punctuation tokens.
+  if (/^[^A-Za-z0-9']+$/.test(next) || /^[^A-Za-z0-9']+$/.test(curr)) return "";
+  return " ";
+}
+
+function OverridesPanel({ overrides, setOverrides }: { overrides: OverrideMap; setOverrides: (m: OverrideMap) => void }) {
+  const [open, setOpen] = useState(false);
+  const [draftName, setDraftName] = useState("");
+  const [draftNzbn, setDraftNzbn] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+  const entries = Object.entries(overrides);
+
+  const onAdd = () => {
+    if (!draftName.trim()) return;
+    const cleanNzbn = draftNzbn.replace(/\s+/g, "");
+    if (!/^\d{13}$/.test(cleanNzbn)) {
+      alert("NZBN must be exactly 13 digits.");
+      return;
+    }
+    setOverrides(addOverride(overrides, draftName, cleanNzbn));
+    setDraftName("");
+    setDraftNzbn("");
+  };
+
+  const onRemove = (key: string) => setOverrides(removeOverride(overrides, key));
+
+  const onExport = () => {
+    const blob = new Blob([exportJson(overrides)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "miseiri_overrides.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const onImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(String(ev.target?.result ?? "{}"));
+        // Merge: imported entries win on conflict.
+        let next = { ...overrides };
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+          const nzbn = typeof v === "string" ? v : (v as { nzbn?: string })?.nzbn;
+          if (typeof nzbn === "string") next = addOverride(next, k, nzbn, (v as { note?: string })?.note);
+        }
+        setOverrides(next);
+      } catch {
+        alert("Couldn't parse that file as JSON.");
+      }
+    };
+    reader.readAsText(f);
+    e.target.value = "";
+  };
+
+  return (
+    <div style={{ marginTop: 32, border: "1px solid var(--rule)" }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        style={{ width: "100%", textAlign: "left", padding: "16px 18px", background: open ? "var(--panel)" : "transparent", border: "none", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}
+      >
+        <span>
+          <strong style={{ fontSize: 14 }}>Override dictionary</strong>
+          <span style={{ marginLeft: 10, color: "var(--ink-dim)", fontSize: 12 }}>
+            {entries.length === 0 ? "none — optional" : `${entries.length} active`}
+          </span>
+        </span>
+        <span style={{ color: "var(--accent)", fontSize: 13 }}>{open ? "Hide" : "Configure →"}</span>
+      </button>
+      {open && (
+        <div style={{ padding: "0 18px 18px", borderTop: "1px solid var(--rule-soft)" }}>
+          <p style={{ color: "var(--ink-dim)", fontSize: 13, lineHeight: 1.6, margin: "12px 0 16px" }}>
+            Force a name to resolve to a specific NZBN. Useful when your books always call them
+            &ldquo;ABC Co&rdquo; but they&rsquo;re registered as &ldquo;ABC Holdings (NZ) Limited&rdquo;.
+            Entries persist for this tab session only — closing the tab clears them. Export to keep
+            them across sessions.
+          </p>
+
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr auto", gap: 8, marginBottom: 16 }}>
+            <input
+              value={draftName}
+              onChange={(e) => setDraftName(e.target.value)}
+              placeholder="Input name as it appears in your file"
+              style={{ ...selectStyle, padding: "8px 12px" }}
+            />
+            <input
+              value={draftNzbn}
+              onChange={(e) => setDraftNzbn(e.target.value)}
+              placeholder="13-digit NZBN"
+              style={{ ...selectStyle, padding: "8px 12px", fontVariantNumeric: "tabular-nums" }}
+            />
+            <button onClick={onAdd} style={{ ...btnSecondary, padding: "8px 16px" }}>Add</button>
+          </div>
+
+          {entries.length > 0 && (
+            <div style={{ border: "1px solid var(--rule-soft)", marginBottom: 16, maxHeight: 240, overflowY: "auto" }}>
+              <table style={{ width: "100%", fontSize: 13 }}>
+                <tbody>
+                  {entries.map(([key, entry]) => (
+                    <tr key={key} style={{ borderBottom: "1px solid var(--rule-soft)" }}>
+                      <td style={{ padding: "8px 12px" }}>{key}</td>
+                      <td style={{ padding: "8px 12px", color: "var(--ink-dim)", fontVariantNumeric: "tabular-nums" }}>NZBN {entry.nzbn}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right" }}>
+                        <button onClick={() => onRemove(key)} style={{ ...linkBtn, color: "var(--red)" }}>Remove</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => fileRef.current?.click()} style={{ ...btnSecondary, padding: "8px 16px", fontSize: 13 }}>Import JSON</button>
+            <button onClick={onExport} disabled={entries.length === 0} style={{ ...btnSecondary, padding: "8px 16px", fontSize: 13, opacity: entries.length === 0 ? 0.4 : 1 }}>Export JSON</button>
+            {entries.length > 0 && (
+              <button
+                onClick={() => { if (confirm("Clear all overrides?")) setOverrides({}); }}
+                style={{ ...linkBtn, color: "var(--red)", marginLeft: "auto" }}
+              >
+                Clear all
+              </button>
+            )}
+            <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: "none" }} onChange={onImport} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
