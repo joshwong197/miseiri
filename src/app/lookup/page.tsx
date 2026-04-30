@@ -4,7 +4,6 @@
 // one name in, one result out. For the casual user with one company to
 // verify and no spreadsheet.
 
-import Link from "next/link";
 import { useState } from "react";
 import { tokenDiff } from "@/lib/diff";
 
@@ -66,18 +65,21 @@ export default function LookupPage() {
 
   return (
     <main style={{ maxWidth: 760, margin: "0 auto", padding: "48px 24px 96px" }}>
-      <header style={{ marginBottom: 40 }}>
-        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap" }}>
-            <h1 style={{ fontSize: 36, fontWeight: 600, letterSpacing: "-0.02em", margin: 0 }}>
-              Quick lookup
-            </h1>
-            <span lang="ja" style={{ fontSize: 18, letterSpacing: "0.18em", color: "var(--ink-dim)" }}>一件</span>
-          </div>
-          <Link href="/" style={{ color: "var(--accent)", fontSize: 13 }}>← Bulk file mode</Link>
+      <header style={{ marginBottom: 32 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap", marginBottom: 12 }}>
+          <span lang="ja" style={{ fontFamily: "var(--font-mincho)", fontSize: 14, letterSpacing: "0.25em", color: "var(--ink-dim)" }}>
+            二 · 件
+          </span>
+          <span style={{ width: 24, height: 1, background: "var(--rule)" }} />
+          <span style={{ fontFamily: "var(--font-gothic)", fontSize: 12, color: "var(--ink-dim)", letterSpacing: "0.02em" }}>
+            Single-name lookup
+          </span>
         </div>
-        <p style={{ color: "var(--ink-dim)", marginTop: 10, lineHeight: 1.6 }}>
-          One name or NZBN, one answer. Same matching engine as the bulk flow.
+        <h1 style={{ fontFamily: "var(--font-serif)", fontSize: 44, fontWeight: 300, letterSpacing: "-0.02em", lineHeight: 1.05, margin: 0 }}>
+          One name. <em style={{ color: "var(--ai)" }}>One answer.</em>
+        </h1>
+        <p style={{ fontFamily: "var(--font-serif)", color: "var(--ink-dim)", marginTop: 14, lineHeight: 1.6 }}>
+          Same matching engine as the bulk flow — name or NZBN in, the registered identity out.
         </p>
       </header>
 

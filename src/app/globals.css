@@ -1,35 +1,69 @@
+/* Miseiri palette — ported from Mihari's editorial design system.
+ * Light = cool stone; Dark = lacquer black. No rounded corners, no shadows. */
+
 :root {
-  --bg: #fafafa;
-  --panel: #f0f0f0;
-  --ink: #1a1a1a;
-  --ink-dim: #5a5a5a;
-  --ink-faint: #9a9a9a;
-  --rule: #d8d8d8;
-  --rule-soft: #e8e8e8;
-  --accent: #2952b3;
-  --green: #2e7d32;
-  --amber: #c97a00;
-  --red: #b82f21;
+  --bg: #eceeef;
+  --panel: #f4f5f6;
+  --panel2: #e3e5e7;
+  --ink: #14161a;
+  --ink-dim: #5e6168;
+  --ink-faint: #a8abb0;
+  --rule: #c6c9ce;
+  --rule-soft: #d8dbdf;
+  --ai: #2a4d7a;
+  --ai-deep: #1a3558;
+  --vermillion: #b82f21;
+  --amber: #a87623;
+  --green: #3a6f4a;
+  /* Legacy aliases for older inline styles — keep mapped so we don't have
+   * to rewrite every occurrence at once. */
+  --accent: var(--ai);
+  --red: var(--vermillion);
 }
 
-* { box-sizing: border-box; }
+.dark {
+  --bg: #0b0c0e;
+  --panel: #111317;
+  --panel2: #16191e;
+  --ink: #e8e6df;
+  --ink-dim: #8d8d85;
+  --ink-faint: #4a4a45;
+  --rule: #23262c;
+  --rule-soft: #1a1d22;
+  --ai: #8fb5e0;
+  --ai-deep: #4a77a8;
+  --vermillion: #e3594a;
+  --amber: #d9a54a;
+  --green: #7fc28f;
+  --accent: var(--ai);
+  --red: var(--vermillion);
+}
+
+* { box-sizing: border-box; border-radius: 0 !important; }
 
 html, body {
   margin: 0;
   padding: 0;
   background: var(--bg);
   color: var(--ink);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-gothic), "Helvetica Neue", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 15px;
-  line-height: 1.5;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Smooth theme transitions on the props that actually change colour. */
+html, body, button, input, select, textarea {
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
 }
 
 button { font: inherit; }
+input, select, textarea, button { font-family: inherit; color: var(--ink); }
 
-input, select, textarea, button {
-  font-family: inherit;
-}
-
-a { color: var(--accent); }
+a { color: var(--ai); text-decoration: none; }
+a:hover { text-decoration: underline; }
 
 table { border-collapse: collapse; }
+
+::selection { background: var(--ai); color: var(--bg); }

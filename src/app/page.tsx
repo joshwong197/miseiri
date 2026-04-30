@@ -1,7 +1,6 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { normalizeForCompare } from "@/lib/match/normalize";
@@ -449,22 +448,23 @@ export default function HomePage() {
 
   return (
     <main style={{ maxWidth: 1100, margin: "0 auto", padding: "48px 24px 96px" }}>
-      <header style={{ marginBottom: 48 }}>
-        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap" }}>
-            <h1 style={{ fontSize: 40, fontWeight: 600, letterSpacing: "-0.02em", margin: 0 }}>
-              Miseiri
-            </h1>
-            <span lang="ja" style={{ fontSize: 22, letterSpacing: "0.18em", color: "var(--ink-dim)" }}>
-              見整理
-            </span>
-          </div>
-          <Link href="/lookup" style={{ color: "var(--accent)", fontSize: 13 }}>Single name lookup →</Link>
+      <header style={{ marginBottom: 40 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap", marginBottom: 12 }}>
+          <span lang="ja" style={{ fontFamily: "var(--font-mincho)", fontSize: 14, letterSpacing: "0.25em", color: "var(--ink-dim)" }}>
+            一 · 整
+          </span>
+          <span style={{ width: 24, height: 1, background: "var(--rule)" }} />
+          <span style={{ fontFamily: "var(--font-gothic)", fontSize: 12, color: "var(--ink-dim)", letterSpacing: "0.02em" }}>
+            Cleanse a spreadsheet
+          </span>
         </div>
-        <p style={{ color: "var(--ink-dim)", marginTop: 8, maxWidth: 640 }}>
-          Upload a spreadsheet of customer or supplier names. Miseiri resolves each one against the
-          New Zealand Business Number register and returns your file enriched with authoritative
-          identity data. Free, runs in your browser, no data stored.
+        <h1 style={{ fontFamily: "var(--font-serif)", fontSize: 56, fontWeight: 300, letterSpacing: "-0.025em", lineHeight: 1.05, margin: 0 }}>
+          Resolve every row to its <em style={{ color: "var(--ai)" }}>authoritative identity</em>.
+        </h1>
+        <p style={{ fontFamily: "var(--font-serif)", fontSize: 17, color: "var(--ink-dim)", lineHeight: 1.6, marginTop: 16, maxWidth: 720 }}>
+          Drop a CSV or Excel of customer names. Miseiri resolves each one against the New Zealand
+          Business Number register and returns your file enriched with the canonical legal name,
+          NZBN, status, addresses, and more — free, in your browser, nothing stored.
         </p>
       </header>
 
