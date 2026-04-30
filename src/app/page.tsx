@@ -459,7 +459,7 @@ export default function HomePage() {
           </span>
         </div>
         <h1 style={{ fontFamily: "var(--font-serif)", fontSize: 56, fontWeight: 300, letterSpacing: "-0.025em", lineHeight: 1.05, margin: 0 }}>
-          Resolve every row to its <em style={{ color: "var(--ai)" }}>authoritative identity</em>.
+          Data cleansing <em style={{ color: "var(--ai)" }}>made easy</em>.
         </h1>
         <p style={{ fontFamily: "var(--font-serif)", fontSize: 17, color: "var(--ink-dim)", lineHeight: 1.6, marginTop: 16, maxWidth: 720 }}>
           Drop a CSV or Excel of customer names. Miseiri resolves each one against the New Zealand
