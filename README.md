@@ -34,7 +34,8 @@ npm test
 ## MCP server
 
 The same matching engine is exposed as a public MCP server at
-`https://miseiri.app/api/mcp` (replace with your deployment domain).
+`https://miseiri.vercel.app/api/mcp/mcp` (streamable HTTP transport)
+or `https://miseiri.vercel.app/api/mcp/sse` (legacy SSE transport).
 Any MCP client — Claude Desktop, Cursor, Claude Code — can call:
 
 - **`lookup_nzbn`** — direct entity lookup by 13-digit NZBN
@@ -51,7 +52,7 @@ Add this to your Claude Desktop config
 {
   "mcpServers": {
     "miseiri": {
-      "url": "https://miseiri.app/api/mcp"
+      "url": "https://miseiri.vercel.app/api/mcp/mcp"
     }
   }
 }
