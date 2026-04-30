@@ -54,20 +54,7 @@ export default function AboutPage() {
         </P>
       </Section>
 
-      <Section num="三" jp="無" title="What it isn't">
-        <P>
-          Miseiri does not monitor entities for changes — that&rsquo;s{" "}
-          <a href="https://mihari.co.nz">Mihari</a>, our sister product. Miseiri is a
-          one-shot cleanse. Run it once a month, before a credit report, after a CRM import.
-        </P>
-        <P>
-          It also does not look up Australian, UK, or US entities. NZ-only by design. The
-          algorithm and architecture would translate, but the API integrations and matching
-          fixtures would not.
-        </P>
-      </Section>
-
-      <Section num="四" jp="無料" title="The pricing">
+      <Section num="三" jp="無料" title="The pricing">
         <P>
           Free. No accounts, no tiers, no usage caps beyond the practical one-file-at-a-time
           limit (10,000 rows). The only outbound traffic is to the official register itself.

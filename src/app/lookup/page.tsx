@@ -68,11 +68,11 @@ export default function LookupPage() {
       <header style={{ marginBottom: 32 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap", marginBottom: 12 }}>
           <span lang="ja" style={{ fontFamily: "var(--font-mincho)", fontSize: 14, letterSpacing: "0.25em", color: "var(--ink-dim)" }}>
-            二 · 件
+            二 · 索
           </span>
           <span style={{ width: 24, height: 1, background: "var(--rule)" }} />
           <span style={{ fontFamily: "var(--font-gothic)", fontSize: 12, color: "var(--ink-dim)", letterSpacing: "0.02em" }}>
-            Single-name lookup
+            Single lookup
           </span>
         </div>
         <h1 style={{ fontFamily: "var(--font-serif)", fontSize: 44, fontWeight: 300, letterSpacing: "-0.02em", lineHeight: 1.05, margin: 0 }}>
@@ -234,7 +234,7 @@ const inputStyle: React.CSSProperties = {
   width: "100%",
   padding: "12px 14px",
   border: "1px solid var(--rule)",
-  background: "white",
+  background: "var(--panel)",
   color: "var(--ink)",
   fontSize: 16,
   outline: "none",

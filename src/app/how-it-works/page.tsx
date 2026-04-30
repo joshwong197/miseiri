@@ -6,7 +6,7 @@ export default function HowItWorksPage() {
   return (
     <InfoPage
       num="二"
-      jp="仕"
+      jp="構"
       eyebrow="How it works"
       title={<>The matcher, <em style={{ color: "var(--ai)" }}>explained</em>.</>}
       intro={

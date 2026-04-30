@@ -451,7 +451,7 @@ export default function HomePage() {
       <header style={{ marginBottom: 40 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap", marginBottom: 12 }}>
           <span lang="ja" style={{ fontFamily: "var(--font-mincho)", fontSize: 14, letterSpacing: "0.25em", color: "var(--ink-dim)" }}>
-            一 · 整
+            一 · 載
           </span>
           <span style={{ width: 24, height: 1, background: "var(--rule)" }} />
           <span style={{ fontFamily: "var(--font-gothic)", fontSize: 12, color: "var(--ink-dim)", letterSpacing: "0.02em" }}>
@@ -1343,7 +1343,7 @@ const selectStyle: React.CSSProperties = {
   width: "100%",
   padding: "10px 12px",
   border: "1px solid var(--rule)",
-  background: "white",
+  background: "var(--panel)",
   color: "var(--ink)",
   outline: "none",
 };

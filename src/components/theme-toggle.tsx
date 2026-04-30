@@ -3,33 +3,32 @@
 import { useEffect, useState } from "react";
 import { useTheme } from "next-themes";
 
-// Three-state toggle: light → dark → system → light. The label uses a
-// kanji that hints at the current mode (光 light, 闇 dark, 自 system).
+// Two-state toggle: light ↔ dark. The label uses a kanji that hints at
+// the current mode (光 light, 闇 dark).
 export function ThemeToggle() {
   const { theme, setTheme, resolvedTheme } = useTheme();
-  // Hydration-safe mount flag. setState-in-effect is the standard pattern
-  // for "render-only-after-mount" since the resolved theme is only known
-  // post-hydration; React 19's lint flags it but this is the recommended
-  // escape hatch from the next-themes docs.
+  // Hydration-safe mount flag — the resolved theme is only known
+  // post-hydration, so we render a placeholder on the server pass.
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setMounted(true);
   }, []);
 
-  // SSR-safe: render a placeholder so the layout doesn't shift on hydrate.
-  if (!mounted) return <span style={{ width: 56, height: 28, display: "inline-block" }} aria-hidden />;
+  if (!mounted) return <span style={{ width: 64, height: 28, display: "inline-block" }} aria-hidden />;
 
-  const next = theme === "system" ? "light" : theme === "light" ? "dark" : "system";
-  const kanji = theme === "system" ? "自" : theme === "light" ? "光" : "闇";
-  const label = theme === "system" ? `system (${resolvedTheme})` : theme;
+  // Treat "system" as whichever resolved theme is currently active so the
+  // first click flips to the explicit opposite, not back to system.
+  const current = (theme === "system" ? resolvedTheme : theme) ?? "light";
+  const next = current === "light" ? "dark" : "light";
+  const kanji = current === "light" ? "光" : "闇";
 
   return (
     <button
       type="button"
       onClick={() => setTheme(next)}
-      aria-label={`Theme: ${label}. Click for ${next}.`}
-      title={`Theme: ${label}. Click for ${next}.`}
+      aria-label={`Theme: ${current}. Click for ${next}.`}
+      title={`Switch to ${next}`}
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -46,7 +45,7 @@ export function ThemeToggle() {
       <span lang="ja" style={{ fontFamily: "var(--font-mincho)", fontSize: 14, color: "var(--ink)" }}>
         {kanji}
       </span>
-      <span style={{ letterSpacing: "0.04em", textTransform: "lowercase" }}>{theme === "system" ? "auto" : theme}</span>
+      <span style={{ letterSpacing: "0.04em", textTransform: "lowercase" }}>{current}</span>
     </button>
   );
 }

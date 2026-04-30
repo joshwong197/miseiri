@@ -5,10 +5,10 @@ import { usePathname } from "next/navigation";
 import { ThemeToggle } from "./theme-toggle";
 
 const NAV: { href: string; jp: string; label: string }[] = [
-  { href: "/", jp: "整", label: "Upload" },
-  { href: "/lookup", jp: "件", label: "Lookup" },
+  { href: "/", jp: "載", label: "Upload" },
+  { href: "/lookup", jp: "索", label: "Single Lookup" },
   { href: "/about", jp: "概", label: "About" },
-  { href: "/how-it-works", jp: "仕", label: "How it works" },
+  { href: "/how-it-works", jp: "構", label: "How it works" },
   { href: "/mcp", jp: "接", label: "MCP" },
 ];
 

@@ -8,12 +8,12 @@ export default function MCPPage() {
       num="三"
       jp="接"
       eyebrow="MCP server"
-      title={<>Miseiri inside <em style={{ color: "var(--ai)" }}>Claude</em>.</>}
+      title={<>Miseiri inside <em style={{ color: "var(--ai)" }}>anywhere</em>.</>}
       intro={
         <>
           The matching engine is also exposed as a Model Context Protocol server, so any
-          MCP client — Claude Desktop, Claude.ai connectors, Cursor, Claude Code — can
-          look up NZBN entities directly in chat. Public, no auth, no API key.
+          MCP client — Claude.ai, Claude Desktop, Cursor, ChatGPT, Cline, Continue, Zed —
+          can look up NZBN entities directly in chat. Public, no auth, no API key.
         </>
       }
     >
@@ -36,63 +36,46 @@ export default function MCPPage() {
         </P>
       </Section>
 
-      <Section num="二" jp="設" title="Install in Claude Desktop">
+      <Section num="二" jp="繋" title="Add to your client">
         <P>
-          Open your Claude Desktop config file:
+          Whichever MCP client you use, the install reduces to pasting one URL. There&rsquo;s
+          no API key, no auth, no installer to download.
+        </P>
+        <Pre>https://miseiri.vercel.app/api/mcp/mcp</Pre>
+        <P>
+          Find the &ldquo;add MCP server&rdquo; or &ldquo;custom connector&rdquo; setting in
+          your client and paste the URL above. Name it whatever you like — &ldquo;Miseiri&rdquo;
+          is conventional. Leave authentication as <em>None</em>.
         </P>
         <P>
-          <strong>macOS</strong>: <code>~/Library/Application Support/Claude/claude_desktop_config.json</code><br />
-          <strong>Windows</strong>: <code>%APPDATA%\Claude\claude_desktop_config.json</code>
-        </P>
-        <P>Add this entry (merge with any existing <code>mcpServers</code> block):</P>
-        <Pre>{`{
-  "mcpServers": {
-    "miseiri": {
-      "url": "https://miseiri.vercel.app/api/mcp/mcp"
-    }
-  }
-}`}</Pre>
-        <P>
-          Quit Claude Desktop completely (system tray → Quit) and reopen. The Miseiri tools
-          appear in the MCP indicator next to the message bar.
+          On Claude.ai, custom connectors require a Pro / Team / Enterprise plan. Other
+          clients (Claude Desktop, Cursor, Cline, ChatGPT, Zed, Continue) accept the URL
+          directly.
         </P>
       </Section>
 
-      <Section num="三" jp="繋" title="Install in Claude.ai">
-        <P>
-          Settings → Connectors → Add custom connector. Use:
-        </P>
-        <Pre>{`Name:  Miseiri
-URL:   https://miseiri.vercel.app/api/mcp/mcp
-Auth:  None`}</Pre>
-        <P>
-          Custom connectors require a Pro / Team / Enterprise plan. Toggle Miseiri on and
-          start a new chat — the tools are available immediately.
-        </P>
-      </Section>
-
-      <Section num="四" jp="例" title="Example prompts">
+      <Section num="三" jp="例" title="Example prompts">
         <H3>Quick verification</H3>
         <P>
           <em>&ldquo;Use Miseiri to look up NZBN 9429036748471.&rdquo;</em>{" "}
-          → Claude calls <code>lookup_nzbn</code> and returns the Fonterra record.
+          → calls <code>lookup_nzbn</code> and returns the Fonterra record.
         </P>
         <H3>Single-name resolution</H3>
         <P>
           <em>&ldquo;Is &lsquo;Fontera Cooperative&rsquo; the same as Fonterra?&rdquo;</em>{" "}
-          → Claude calls <code>match_name</code>, sees a typo, and surfaces the corrected
+          → calls <code>match_name</code>, sees a typo, and surfaces the corrected
           legal name with a confidence score.
         </P>
         <H3>Batch cleanse from chat</H3>
         <P>
           <em>&ldquo;Match these 30 customer names against the NZBN register and give me a
           CSV.&rdquo;</em>{" "}
-          → Claude calls <code>match_batch</code>, formats the result as CSV inline, and
-          offers it for download.
+          → calls <code>match_batch</code>, formats the result as CSV inline, and offers
+          it for download.
         </P>
       </Section>
 
-      <Section num="五" jp="安" title="Privacy posture">
+      <Section num="四" jp="安" title="Privacy posture">
         <P>
           Same as the website. Each tool call sends only the name, NZBN, or company number
           you asked about. The server forwards to business.govt.nz, returns the result, and
