@@ -27,6 +27,15 @@ describe("normalizeForCompare", () => {
   it("returns empty for empty input", () => {
     expect(normalizeForCompare("")).toBe("");
   });
+
+  it("expands common abbreviations so query and candidate align", () => {
+    expect(normalizeForCompare("Durell Comm Interiors Ltd"))
+      .toBe(normalizeForCompare("Durell Commercial Interiors Limited"));
+    expect(normalizeForCompare("Acme Intl Trading"))
+      .toBe(normalizeForCompare("Acme International Trading"));
+    expect(normalizeForCompare("Smith Bros"))
+      .toBe(normalizeForCompare("Smith Brothers"));
+  });
 });
 
 describe("jaccard", () => {

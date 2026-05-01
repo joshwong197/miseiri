@@ -4,6 +4,7 @@
 //  - shape normalization (addresses can be flat or { addressList })
 
 import type { NzbnEntity, NzbnSearchResponse, NzbnAddress } from "./types";
+import { expandAbbreviations } from "../match/normalize";
 
 const BASE_URL = "https://api.business.govt.nz/gateway/nzbn/v5";
 
@@ -85,6 +86,10 @@ export function simplifyName(name: string): string | null {
   s = s.replace(/^nz\s+one\s+time\s+/i, "").trim();
   // Drop trailing year (e.g. "Ltd 2022" or "Indigo Skies 2022 Ltd").
   s = s.replace(/\b(19|20)\d{2}\b/g, "").replace(/\s{2,}/g, " ").trim();
+  // Expand common abbreviations (COMM → COMMERCIAL etc.) so NZBN's
+  // substring search has a chance of returning the right candidate.
+  const expanded = expandAbbreviations(s);
+  if (expanded && expanded !== s.toLowerCase()) s = expanded;
   if (!s || s.toLowerCase() === name.trim().toLowerCase()) return null;
   // Reject simplifications that collapse to a generic single token —
   // e.g. "NZ One Time Staff" → "Staff" would happily match STAFFY LIMITED

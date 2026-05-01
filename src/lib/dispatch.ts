@@ -8,7 +8,10 @@
 
 import { searchByName, searchByCompanyNumber, getEntity, getRoles, simplifyName, NzbnApiError } from "./nzbn/client";
 import { decide, type Candidate } from "./match";
+import { score } from "./match/score";
 import { buildEnrichedRow, type FieldGroups, type EnrichedRow } from "./enrich";
+
+const NZBN_NAME_MISMATCH_THRESHOLD = 0.4;
 
 export interface MatchOneInput {
   name?: string;
@@ -24,19 +27,58 @@ export async function matchOne(input: MatchOneInput): Promise<EnrichedRow> {
   const inputNzbn = clean(input.nzbn);
   const inputCompanyNumber = clean(input.companyNumber);
 
+  let nzbnFallbackNote: string | null = null;
+
   try {
-    // Strategy 1: direct NZBN lookup
+    // Strategy 1: direct NZBN lookup. On 4xx (bad/unknown NZBN), fall
+    // through to name search if a name is supplied — wrong NZBNs in
+    // customer ledgers are common and the row's name is often correct.
     if (inputNzbn) {
-      const entity = await getEntity(inputNzbn);
-      const rolesData = fields.directors ? await getRoles(entity.nzbn) : undefined;
-      return buildEnrichedRow({
-        status: "matched",
-        method: "nzbn_lookup",
-        confidence: 1.0,
-        entity,
-        fields,
-        rolesData,
-      });
+      try {
+        const entity = await getEntity(inputNzbn);
+
+        // NZBN resolved. If the row also supplied a name, sanity-check
+        // that the resolved entity matches it. A wrong NZBN that happens
+        // to hit a real (but unrelated) company is the worst silent
+        // failure — flag it for review instead of trusting blindly.
+        if (inputName) {
+          const sim = score({ query: inputName, candidateName: entity.entityName }).total;
+          if (sim < NZBN_NAME_MISMATCH_THRESHOLD) {
+            const rolesData = fields.directors ? await getRoles(entity.nzbn) : undefined;
+            const enriched = buildEnrichedRow({
+              status: "needs_review",
+              method: "nzbn_lookup",
+              confidence: sim,
+              entity,
+              fields,
+              rolesData,
+            });
+            enriched.candidates = [{
+              nzbn: entity.nzbn,
+              entityName: entity.entityName,
+              score: Number(sim.toFixed(3)),
+            }];
+            enriched.notes = `Supplied NZBN resolved to "${entity.entityName}", which does not match the row name "${inputName}". Verify before using.`;
+            return enriched;
+          }
+        }
+
+        const rolesData = fields.directors ? await getRoles(entity.nzbn) : undefined;
+        return buildEnrichedRow({
+          status: "matched",
+          method: "nzbn_lookup",
+          confidence: 1.0,
+          entity,
+          fields,
+          rolesData,
+        });
+      } catch (err) {
+        const isLookupMiss = err instanceof NzbnApiError && (err.status === 400 || err.status === 404);
+        // No name to fall back to → propagate so the outer catch reports it.
+        if (!isLookupMiss || !inputName) throw err;
+        nzbnFallbackNote = `Supplied NZBN ${inputNzbn} not found (NZBN ${err.status}); matched by name instead.`;
+        // fall through to name strategy below
+      }
     }
 
     // Strategy 2: company number lookup
@@ -98,8 +140,9 @@ export async function matchOne(input: MatchOneInput): Promise<EnrichedRow> {
       : undefined;
     const outcome = decide({ query: inputName, candidates, highConfidenceThreshold: threshold });
 
+    let enriched: EnrichedRow;
     if (outcome.status !== "matched") {
-      const enriched = buildEnrichedRow({
+      enriched = buildEnrichedRow({
         status: outcome.status,
         method: outcome.method,
         confidence: outcome.confidence,
@@ -111,19 +154,25 @@ export async function matchOne(input: MatchOneInput): Promise<EnrichedRow> {
         entityName: c.entityName,
         score: Number(c.score.toFixed(3)),
       }));
-      return enriched;
+    } else {
+      const entity = await getEntity(outcome.best!.nzbn);
+      const rolesData = fields.directors ? await getRoles(entity.nzbn) : undefined;
+      enriched = buildEnrichedRow({
+        status: outcome.status,
+        method: outcome.method,
+        confidence: outcome.confidence,
+        entity,
+        fields,
+        rolesData,
+      });
     }
 
-    const entity = await getEntity(outcome.best!.nzbn);
-    const rolesData = fields.directors ? await getRoles(entity.nzbn) : undefined;
-    return buildEnrichedRow({
-      status: outcome.status,
-      method: outcome.method,
-      confidence: outcome.confidence,
-      entity,
-      fields,
-      rolesData,
-    });
+    if (nzbnFallbackNote) {
+      enriched.notes = enriched.notes
+        ? `${nzbnFallbackNote} ${enriched.notes}`
+        : nzbnFallbackNote;
+    }
+    return enriched;
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     const upstreamStatus = err instanceof NzbnApiError ? err.status : null;
