@@ -35,6 +35,13 @@ const ABBREVIATIONS: Record<string, string> = {
   grp: "group",
   natl: "national",
   svcs: "services",
+  // Geographic expansions. Values may be multi-word — they get re-split
+  // by the token-join step downstream, so "nz" → "new zealand" becomes
+  // two tokens, allowing jaccard to count both halves of the match.
+  nz: "new zealand",
+  chch: "christchurch",
+  akl: "auckland",
+  wgtn: "wellington",
 };
 
 export function normalize(name: string): string {

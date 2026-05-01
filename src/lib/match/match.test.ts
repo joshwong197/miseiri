@@ -36,6 +36,13 @@ describe("normalizeForCompare", () => {
     expect(normalizeForCompare("Smith Bros"))
       .toBe(normalizeForCompare("Smith Brothers"));
   });
+
+  it("expands geographic abbreviations to multi-word forms", () => {
+    expect(normalizeForCompare("Air NZ Ltd"))
+      .toBe(normalizeForCompare("Air New Zealand Limited"));
+    expect(normalizeForCompare("PlaceMakers ChCh Ltd"))
+      .toBe(normalizeForCompare("PlaceMakers Christchurch Limited"));
+  });
 });
 
 describe("jaccard", () => {
