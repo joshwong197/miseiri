@@ -75,7 +75,35 @@ export default function MCPPage() {
         </P>
       </Section>
 
-      <Section num="四" jp="安" title="Privacy posture">
+      <Section num="四" jp="技" title="Optional: install the skill">
+        <P>
+          The MCP tools work with any client out of the box. If you use Claude Code or Claude
+          Desktop, you can additionally install the <em>Miseiri skill</em> — a one-file
+          instruction set that teaches the model how to recover from typos, low-confidence
+          rows, and ambiguous candidates the matcher alone can&rsquo;t handle. Spell-correct
+          before giving up, retry at threshold 0.5, ask before picking from a sibling
+          cluster, that sort of thing.
+        </P>
+        <P>
+          Download:{" "}
+          <a href="/skills/miseiri/SKILL.md" download style={{ color: "var(--ai)", textDecoration: "underline" }}>
+            SKILL.md
+          </a>
+        </P>
+        <P>
+          Install (Claude Code / Desktop) — drop the file at:
+        </P>
+        <Pre>~/.claude/skills/miseiri/SKILL.md</Pre>
+        <P>
+          On Windows that&rsquo;s <code>%USERPROFILE%\.claude\skills\miseiri\SKILL.md</code>.
+          Restart your client; the skill auto-loads when you mention Miseiri or call any of
+          its tools. The file is plain markdown — read it, edit it, fork it. The biggest
+          single accuracy win it adds is spell-correcting messy ledger rows before reporting
+          not_found.
+        </P>
+      </Section>
+
+      <Section num="五" jp="安" title="Privacy posture">
         <P>
           Same as the website. Each tool call sends only the name, NZBN, or company number
           you asked about. The server forwards to business.govt.nz, returns the result, and
