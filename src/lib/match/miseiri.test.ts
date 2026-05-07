@@ -146,6 +146,37 @@ describe("generateSearchVariants", () => {
     const v = generateSearchVariants("A");
     expect(v.every((x) => x.length >= 2)).toBe(true);
   });
+
+  it("preserves year-shaped numbers (load-bearing in legal names)", () => {
+    const v = generateSearchVariants("Farm Gear HB 2010 Ltd");
+    // 2010 should appear in at least one variant — it's part of the
+    // legal name ("Farm Gear HB (2010) Limited"), not noise.
+    expect(v.some((x) => /2010/.test(x))).toBe(true);
+  });
+
+  it("emits a trailing-suffix-dropped variant first (Farm Gear case)", () => {
+    const v = generateSearchVariants("Farm Gear HB 2010 Ltd");
+    // Variant 1 should be 'Farm Gear HB 2010' — the suffix gone, year kept.
+    expect(v[0]).toMatch(/^Farm Gear HB 2010$/i);
+  });
+
+  it("drops non-year bare numbers from the cleaned variant", () => {
+    const v = generateSearchVariants("Carters Christchurch 47");
+    // Variant 1 (cleaned, suffix-dropped) should not contain the store
+    // number. Raw is also retained later in the variant list — that's
+    // expected so we don't lose the option to query exactly as typed.
+    expect(v[0]).not.toMatch(/\b47\b/);
+  });
+
+  it("emits a Ltd ↔ Limited swap variant", () => {
+    const v = generateSearchVariants("Farm Gear HB Ltd");
+    expect(v.some((x) => /\bLimited\s*$/i.test(x))).toBe(true);
+  });
+
+  it("emits a Limited ↔ Ltd swap variant", () => {
+    const v = generateSearchVariants("Acme Limited");
+    expect(v.some((x) => /\bLtd\s*$/i.test(x))).toBe(true);
+  });
 });
 
 describe("decideMiseiri — sibling-cluster trap", () => {

@@ -146,18 +146,44 @@ export function normalizeForSearch(name: string): string {
   return name.replace(/[‘’]/g, "'").replace(/\s+/g, " ").trim();
 }
 
+// Trailing legal-form suffixes we'll drop or substitute when generating
+// search variants. NZBN's substring index doesn't expand abbreviations,
+// so a query containing "Ltd" can fail to match an entity registered
+// with "Limited" (and vice versa). The simplest fix is to also try a
+// suffix-stripped form, plus the substituted form.
+const TRAILING_SUFFIX_REGEX =
+  /\s+(limited|ltd|incorporated|inc|corporation|corp|company|co|trust)\.?\s*$/i;
+
+const SUFFIX_SUBSTITUTIONS: Record<string, string> = {
+  limited: "Ltd",
+  ltd: "Limited",
+  incorporated: "Inc",
+  inc: "Incorporated",
+  corporation: "Corp",
+  corp: "Corporation",
+};
+
 /**
- * Generate up to ~5 NZBN-compatible search query variants from a raw
+ * Generate up to ~9 NZBN-compatible search query variants from a raw
  * customer-supplied name. The dispatch sends the first variant always,
  * then fans out to the rest only when the first yields zero or low-
  * confidence candidates.
  *
  * Variants cover:
- *   - junk-words/numbers stripped       ("Carters Christchurch office")
+ *   - junk-words/store-numbers stripped, suffix dropped
+ *     ("Farm Gear HB 2010 Ltd" → "Farm Gear HB 2010")
+ *   - junk-words/store-numbers stripped, suffix kept
+ *   - raw, exactly as typed
  *   - `&` ↔ `and` swap                  ("Cotter & Stevens")
+ *   - Ltd ↔ Limited swap                ("X Ltd" ↔ "X Limited")
  *   - parens removed                    ("NPE-Tech (2021)")
  *   - hyphens collapsed                 ("NPE-Tech")
  *   - trailing year dropped             ("Indigo Skies 2022")
+ *
+ * Year-shaped numbers (19xx, 20xx) are *preserved* in the junk-strip
+ * filter — they're often part of the legal name (e.g. "Farm Gear HB
+ * (2010) Limited"). Only non-year bare numbers (store/branch numbers)
+ * are dropped.
  *
  * Returned in priority order (most likely to hit first), deduped, and
  * filtered to length ≥ 2 (NZBN's minimum).
@@ -177,9 +203,8 @@ export function generateSearchVariants(rawName: string): string[] {
     }
   };
 
-  // Variant 1 — junk words and bare numeric/year tokens stripped, but
-  // case, `&`, hyphens and parens preserved. This is the most likely
-  // single best hit so it goes first.
+  // Junk-stripped form: drop QUERY_JUNK_WORDS and non-year bare numbers,
+  // preserve everything else (case, &, hyphens, parens, years).
   const cleaned = base
     .split(" ")
     .filter((t) => {
@@ -187,40 +212,72 @@ export function generateSearchVariants(rawName: string): string[] {
       const lower = t.toLowerCase();
       const stripPunct = lower.replace(/[()]/g, "");
       if (QUERY_JUNK_WORDS.has(stripPunct)) return false;
-      // Bare numeric token (with or without parens around it)
-      if (/^\(?\d+\)?$/.test(t)) return false;
+      // Bare numeric token, with or without parens. Years stay — they
+      // commonly appear in legal names ("Farm Gear HB (2010) Limited").
+      if (/^\(?\d+\)?$/.test(t)) {
+        const numOnly = stripPunct;
+        if (/^(?:19|20)\d{2}$/.test(numOnly)) return true;
+        return false;
+      }
       return true;
     })
     .join(" ");
+
+  // Variant 1 — cleaned form with trailing legal suffix dropped.
+  // This is the user's manual workaround ("just remove the Ltd") and
+  // tends to be the single best query for NZBN, since the indexed
+  // legal-form (Limited vs Ltd) often differs from what the user typed.
+  const suffixDropped = (cleaned || base).replace(TRAILING_SUFFIX_REGEX, "").trim();
+  if (suffixDropped) add(suffixDropped);
+
+  // Variant 2 — cleaned form with suffix kept.
   add(cleaned);
 
-  // Variant 2 — original, exactly as typed (modulo whitespace).
+  // Variant 3 — original, exactly as typed (modulo whitespace).
   add(base);
 
-  // Variant 3 — `&` → `and`
+  // Variant 4 — Ltd ↔ Limited (and similar) substitution.
+  const suffixMatch = (cleaned || base).match(TRAILING_SUFFIX_REGEX);
+  if (suffixMatch) {
+    const matched = suffixMatch[1].toLowerCase();
+    const replacement = SUFFIX_SUBSTITUTIONS[matched];
+    if (replacement) {
+      const swapped = (cleaned || base).replace(
+        TRAILING_SUFFIX_REGEX,
+        ` ${replacement}`,
+      );
+      add(swapped);
+    }
+  }
+
+  // Variant 5 — `&` → `and`
   if (/&/.test(cleaned || base)) {
     add((cleaned || base).replace(/\s*&\s*/g, " and "));
   }
 
-  // Variant 4 — `and` → `&` (some indexes prefer the symbol form)
+  // Variant 6 — `and` → `&` (some indexes prefer the symbol form)
   if (/\band\b/i.test(cleaned || base)) {
     add((cleaned || base).replace(/\s+and\s+/gi, " & "));
   }
 
-  // Variant 5 — parens removed (content kept)
+  // Variant 7 — parens removed (content kept)
   if (/[()]/.test(cleaned || base)) {
     add((cleaned || base).replace(/[()]/g, " "));
   }
 
-  // Variant 6 — hyphens to spaces
+  // Variant 8 — hyphens to spaces
   if (/-/.test(cleaned || base)) {
     add((cleaned || base).replace(/-/g, " "));
   }
 
-  // Variant 7 — trailing year dropped (covers "Indigo Skies 2022 Ltd"
-  // and "NPE-Tech (2021)" style suffixes that name-search engines often
-  // strip silently).
-  const noYear = (cleaned || base).replace(/\s*\(?(?:19|20)\d{2}\)?\s*$/i, "").trim();
+  // Variant 9 — trailing year dropped. Covers the case where the year
+  // really IS junk ("Indigo Skies 2022 Ltd" — entity is "INDIGO SKIES
+  // LIMITED", year was the registration year tacked on by the user).
+  // Apply suffix-strip first so "X 2022 Ltd" → "X 2022" → "X".
+  const noYear = (cleaned || base)
+    .replace(TRAILING_SUFFIX_REGEX, "")
+    .replace(/\s*\(?(?:19|20)\d{2}\)?\s*$/i, "")
+    .trim();
   if (noYear && noYear !== (cleaned || base)) add(noYear);
 
   return ordered;
