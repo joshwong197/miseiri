@@ -134,3 +134,94 @@ export function stripQueryJunk(name: string): string {
     .join(" ");
   return stripped.length === 0 ? base : stripped;
 }
+
+/**
+ * Lightweight cleanup for an NZBN-bound search query. Preserves case,
+ * `&`, hyphens, parentheses — those may all be load-bearing for NZBN's
+ * substring index. Only normalises curly quotes and collapses
+ * whitespace. Compare to `normalize` (aggressive, used for scoring).
+ */
+export function normalizeForSearch(name: string): string {
+  if (!name) return "";
+  return name.replace(/[‘’]/g, "'").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Generate up to ~5 NZBN-compatible search query variants from a raw
+ * customer-supplied name. The dispatch sends the first variant always,
+ * then fans out to the rest only when the first yields zero or low-
+ * confidence candidates.
+ *
+ * Variants cover:
+ *   - junk-words/numbers stripped       ("Carters Christchurch office")
+ *   - `&` ↔ `and` swap                  ("Cotter & Stevens")
+ *   - parens removed                    ("NPE-Tech (2021)")
+ *   - hyphens collapsed                 ("NPE-Tech")
+ *   - trailing year dropped             ("Indigo Skies 2022")
+ *
+ * Returned in priority order (most likely to hit first), deduped, and
+ * filtered to length ≥ 2 (NZBN's minimum).
+ */
+export function generateSearchVariants(rawName: string): string[] {
+  if (!rawName) return [];
+  const base = normalizeForSearch(rawName);
+  if (!base || base.length < 2) return [];
+
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  const add = (v: string) => {
+    const t = v.replace(/\s+/g, " ").trim();
+    if (t.length >= 2 && !seen.has(t.toLowerCase())) {
+      seen.add(t.toLowerCase());
+      ordered.push(t);
+    }
+  };
+
+  // Variant 1 — junk words and bare numeric/year tokens stripped, but
+  // case, `&`, hyphens and parens preserved. This is the most likely
+  // single best hit so it goes first.
+  const cleaned = base
+    .split(" ")
+    .filter((t) => {
+      if (t.length === 0) return false;
+      const lower = t.toLowerCase();
+      const stripPunct = lower.replace(/[()]/g, "");
+      if (QUERY_JUNK_WORDS.has(stripPunct)) return false;
+      // Bare numeric token (with or without parens around it)
+      if (/^\(?\d+\)?$/.test(t)) return false;
+      return true;
+    })
+    .join(" ");
+  add(cleaned);
+
+  // Variant 2 — original, exactly as typed (modulo whitespace).
+  add(base);
+
+  // Variant 3 — `&` → `and`
+  if (/&/.test(cleaned || base)) {
+    add((cleaned || base).replace(/\s*&\s*/g, " and "));
+  }
+
+  // Variant 4 — `and` → `&` (some indexes prefer the symbol form)
+  if (/\band\b/i.test(cleaned || base)) {
+    add((cleaned || base).replace(/\s+and\s+/gi, " & "));
+  }
+
+  // Variant 5 — parens removed (content kept)
+  if (/[()]/.test(cleaned || base)) {
+    add((cleaned || base).replace(/[()]/g, " "));
+  }
+
+  // Variant 6 — hyphens to spaces
+  if (/-/.test(cleaned || base)) {
+    add((cleaned || base).replace(/-/g, " "));
+  }
+
+  // Variant 7 — trailing year dropped (covers "Indigo Skies 2022 Ltd"
+  // and "NPE-Tech (2021)" style suffixes that name-search engines often
+  // strip silently).
+  const noYear = (cleaned || base).replace(/\s*\(?(?:19|20)\d{2}\)?\s*$/i, "").trim();
+  if (noYear && noYear !== (cleaned || base)) add(noYear);
+
+  return ordered;
+}

@@ -28,11 +28,15 @@ export interface MiseiriScoreBreakdown {
   total: number;
 }
 
-const W_TRIGRAM = 0.35;
+// Weights blend to 1.0. Trading-name carries more weight than the
+// default scorer (0.20 vs 0.10) because customer ledgers frequently
+// refer to companies by their trading name rather than their legal
+// name — e.g. "PaperPlus" instead of "WHITCOULLS LIMITED".
+const W_TRIGRAM = 0.30;
 const W_JARO = 0.25;
 const W_CONTAINMENT = 0.20;
-const W_LEVENSHTEIN = 0.10;
-const W_TRADING_NAME = 0.10;
+const W_LEVENSHTEIN = 0.05;
+const W_TRADING_NAME = 0.20;
 const TOTAL_WEIGHT = W_TRIGRAM + W_JARO + W_CONTAINMENT + W_LEVENSHTEIN + W_TRADING_NAME;
 
 export function scoreMiseiri({

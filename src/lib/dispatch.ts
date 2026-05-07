@@ -7,7 +7,7 @@
 // row. No HTTP concerns, no logging, no transport details.
 
 import { searchByName, searchByCompanyNumber, getEntity, getRoles, simplifyName, NzbnApiError } from "./nzbn/client";
-import { decide, decideMiseiri, type Candidate, stripQueryJunk } from "./match";
+import { decide, decideMiseiri, type Candidate, stripQueryJunk, generateSearchVariants } from "./match";
 import { score } from "./match/score";
 import { buildEnrichedRow, type FieldGroups, type EnrichedRow } from "./enrich";
 
@@ -120,24 +120,58 @@ export async function matchOne(input: MatchOneInput): Promise<EnrichedRow> {
       });
     }
 
-    // Strip role/location junk ("Carters Christchurch office" → "Carters
-    // Christchurch") so NZBN's prefix-based search has a chance of
-    // surfacing the correct legal entity. The cleaned form is also used
-    // for scoring — the stripped words are by definition not part of any
-    // legal name, so keeping them around only drags scores down.
-    const cleanedName = stripQueryJunk(inputName);
-    const scoringQuery = cleanedName || inputName;
+    // Scoring uses the aggressively-cleaned form (lowercased, & → and,
+    // suffixes stripped) so different surface forms compare equal. The
+    // search call is decoupled — see the variant fan-out below — because
+    // NZBN's substring index treats `&`, hyphens and parens literally.
+    const scoringQuery = stripQueryJunk(inputName) || inputName;
 
-    let search = await searchByName(scoringQuery, 10);
-    let items = search.items ?? [];
+    // Generate up to ~5 search variants from the raw input. We always
+    // try the first; if it returns 0 candidates or the top candidate
+    // scores below FANOUT_THRESHOLD, we fan out to the rest in parallel
+    // and merge by NZBN. Keeps the common case at 1 API call and the
+    // hard case at 4–5.
+    type SearchItem = NonNullable<Awaited<ReturnType<typeof searchByName>>["items"]>[number];
+    const variants = generateSearchVariants(inputName);
+    const FANOUT_THRESHOLD = 0.5;
+    const merged = new Map<string, SearchItem>();
+    let items: SearchItem[] = [];
 
-    // Retry with a simplified version when the original yields nothing.
-    // We keep the *cleaned* query as the source-of-truth for scoring so
-    // a generic simplification ("Staff") doesn't auto-match STAFFY LIMITED.
+    if (variants.length > 0) {
+      const firstResult = await searchByName(variants[0], 10);
+      for (const it of firstResult.items ?? []) merged.set(it.nzbn, it);
+
+      const topScore = merged.size > 0
+        ? Math.max(
+          ...Array.from(merged.values()).map(
+            (it) => score({ query: scoringQuery, candidateName: it.entityName }).total,
+          ),
+        )
+        : 0;
+
+      if (variants.length > 1 && (merged.size === 0 || topScore < FANOUT_THRESHOLD)) {
+        const more = await Promise.all(
+          variants.slice(1).map((v) =>
+            searchByName(v, 10).catch(() => ({ items: [] as SearchItem[] })),
+          ),
+        );
+        for (const r of more) {
+          for (const it of r.items ?? []) {
+            if (!merged.has(it.nzbn)) merged.set(it.nzbn, it);
+          }
+        }
+      }
+
+      items = Array.from(merged.values());
+    }
+
+    // Last-resort: simplifyName fallback when the variant fan-out still
+    // turned up nothing. Uses the aggressively-cleaned form so generic
+    // single-token simplifications don't auto-match unrelated entities.
     if (items.length === 0) {
       const simpler = simplifyName(scoringQuery);
       if (simpler) {
-        search = await searchByName(simpler, 10);
+        const search = await searchByName(simpler, 10);
         items = search.items ?? [];
       }
     }

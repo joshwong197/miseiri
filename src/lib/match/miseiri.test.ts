@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { stripQueryJunk } from "./normalize";
+import { stripQueryJunk, generateSearchVariants, normalizeForSearch } from "./normalize";
 import { spacelessTrigramDice, jaroWinkler, tokenContainment } from "./similarity-extra";
 import { scoreMiseiri } from "./score-miseiri";
 import { decideMiseiri } from "./match-miseiri";
@@ -71,9 +71,10 @@ describe("scoreMiseiri", () => {
     // Default blend lands this case ~0.56. Trigram nails it (1.0) and
     // levenshtein helps (~0.92), but asymmetric containment penalises
     // because "an" doesn't appear as a substring of any candidate token.
-    // Result: well above default but not auto-match territory.
+    // Bumping trading-name weight (which scores 0 here) further dilutes
+    // — final ~0.68. Still meaningfully above default; not auto-match.
     const s = scoreMiseiri({ query: "AN Building", candidateName: "A N Building Limited" });
-    expect(s.total).toBeGreaterThan(0.7);
+    expect(s.total).toBeGreaterThan(0.65);
   });
 
   it("scores Carters Christchurch vs Carters Christchurch Limited as exact (1.0)", () => {
@@ -89,6 +90,61 @@ describe("scoreMiseiri", () => {
     // job. We only assert the score is non-trivial, not auto-match.
     const s = scoreMiseiri({ query: "Fontera", candidateName: "Fonterra Cooperative Group Limited" });
     expect(s.total).toBeGreaterThan(0.3);
+  });
+});
+
+describe("normalizeForSearch", () => {
+  it("preserves case, &, hyphens, parens (NZBN-friendly)", () => {
+    expect(normalizeForSearch("Cotter & Stevens Limited")).toBe("Cotter & Stevens Limited");
+    expect(normalizeForSearch("NPE-Tech (2021) Ltd")).toBe("NPE-Tech (2021) Ltd");
+  });
+
+  it("trims and collapses whitespace, normalises curly quotes", () => {
+    expect(normalizeForSearch("  Smith’s   Co  ")).toBe("Smith's Co");
+  });
+});
+
+describe("generateSearchVariants", () => {
+  it("emits a junk-stripped form first", () => {
+    const v = generateSearchVariants("Carters Christchurch office");
+    expect(v[0].toLowerCase()).toBe("carters christchurch");
+  });
+
+  it("emits & ↔ and swap variants", () => {
+    const v = generateSearchVariants("Cotter & Stevens Limited");
+    expect(v.some((x) => /and/i.test(x))).toBe(true);
+    expect(v.some((x) => /&/.test(x))).toBe(true);
+  });
+
+  it("strips parens content-kept", () => {
+    const v = generateSearchVariants("NPE-Tech (2021)");
+    expect(v.some((x) => !/[()]/.test(x))).toBe(true);
+  });
+
+  it("emits a hyphen-collapsed variant", () => {
+    const v = generateSearchVariants("NPE-Tech 2021");
+    expect(v.some((x) => /^npe tech/i.test(x))).toBe(true);
+  });
+
+  it("emits a year-dropped variant", () => {
+    const v = generateSearchVariants("Indigo Skies 2022 Ltd");
+    expect(v.some((x) => !/2022/.test(x))).toBe(true);
+  });
+
+  it("dedupes case-insensitively", () => {
+    const v = generateSearchVariants("Acme Limited");
+    const lower = v.map((x) => x.toLowerCase());
+    expect(new Set(lower).size).toBe(lower.length);
+  });
+
+  it("handles empty input gracefully", () => {
+    expect(generateSearchVariants("")).toEqual([]);
+    expect(generateSearchVariants("  ")).toEqual([]);
+  });
+
+  it("filters out variants shorter than 2 chars", () => {
+    const v = generateSearchVariants("A");
+    expect(v.every((x) => x.length >= 2)).toBe(true);
   });
 });
 

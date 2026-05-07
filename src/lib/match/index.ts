@@ -1,4 +1,4 @@
-export { normalize, normalizeForCompare, tokens, stripQueryJunk, expandAbbreviations } from "./normalize";
+export { normalize, normalizeForCompare, tokens, stripQueryJunk, normalizeForSearch, generateSearchVariants, expandAbbreviations } from "./normalize";
 export { jaccard, levenshtein, levenshteinRatio, tokenPrefixMatch } from "./similarity";
 export { spacelessTrigramDice, jaroWinkler, tokenContainment } from "./similarity-extra";
 export { score } from "./score";

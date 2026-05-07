@@ -177,7 +177,11 @@ export default function HomePage() {
   // Process a single row. Used by the initial run, the retry button, and
   // the candidate-picker. `overrideNzbn` lets a manual pick bypass the
   // search step and look up directly.
-  const processRow = async (index: number, overrideNzbn?: string): Promise<Record<string, unknown> | null> => {
+  const processRow = async (
+    index: number,
+    overrideNzbn?: string,
+    settingsOverrides?: { matchThreshold?: number; useMiseiriLogic?: boolean },
+  ): Promise<Record<string, unknown> | null> => {
     setResults((prev) => prev.map((r) => (r.index === index ? { ...r, status: "processing" } : r)));
     const row = rows[index];
     const inputName = columnMap.name ? row[columnMap.name] : "";
@@ -189,13 +193,15 @@ export default function HomePage() {
     const dictHit = !overrideNzbn && inputName ? lookupOverride(overrides, inputName) : null;
     const effectiveNzbn = overrideNzbn ?? dictHit?.nzbn ?? (columnMap.nzbn ? row[columnMap.nzbn] : undefined);
 
+    const effectiveThreshold = settingsOverrides?.matchThreshold ?? matchThreshold;
+    const effectiveMiseiri = settingsOverrides?.useMiseiriLogic ?? useMiseiriLogic;
     const payload = {
       name: inputName,
       nzbn: effectiveNzbn,
       companyNumber: columnMap.companyNumber ? row[columnMap.companyNumber] : undefined,
       fields: fieldGroups,
-      matchThreshold,
-      scoringStrategy: useMiseiriLogic ? "miseiri" : "default",
+      matchThreshold: effectiveThreshold,
+      scoringStrategy: effectiveMiseiri ? "miseiri" : "default",
     };
     try {
       const res = await fetch("/api/match-row", {
@@ -279,14 +285,17 @@ export default function HomePage() {
     setStage("done");
   };
 
-  const retryIndices = async (indices: number[]) => {
+  const retryIndices = async (
+    indices: number[],
+    settingsOverrides?: { matchThreshold?: number; useMiseiriLogic?: boolean },
+  ) => {
     if (indices.length === 0) return;
     setRunning(true);
     abortRef.current = false;
     for (const idx of indices) {
       if (abortRef.current) break;
       setProgressIdx(idx);
-      await processRow(idx);
+      await processRow(idx, undefined, settingsOverrides);
       await new Promise((r) => setTimeout(r, ROW_DELAY_MS));
     }
     setRunning(false);
@@ -528,6 +537,8 @@ export default function HomePage() {
           onDownloadMihari={downloadMihariCsv}
           hasOriginalExcel={!!originalWorkbookRef.current}
           onRetry={retryIndices}
+          globalThreshold={matchThreshold}
+          globalUseMiseiriLogic={useMiseiriLogic}
           onPickCandidate={(idx, nzbn) => processRow(idx, nzbn).then(() => {})}
           onReject={rejectRow}
           onStartOver={() => {
@@ -1015,6 +1026,7 @@ function ProcessStage({
   overrides, onAddOverride,
   onPauseResume, onStop, onDownload, onDownloadExcel, onDownloadMihari, hasOriginalExcel,
   onStartOver, onRetry, onPickCandidate, onReject,
+  globalThreshold, globalUseMiseiriLogic,
 }: {
   rows: ParsedRow[];
   columnMap: ColumnMap;
@@ -1033,9 +1045,14 @@ function ProcessStage({
   onDownloadMihari: () => void;
   hasOriginalExcel: boolean;
   onStartOver: () => void;
-  onRetry: (indices: number[]) => Promise<void>;
+  onRetry: (
+    indices: number[],
+    overrides?: { matchThreshold?: number; useMiseiriLogic?: boolean },
+  ) => Promise<void>;
   onPickCandidate: (rowIndex: number, nzbn: string) => Promise<void>;
   onReject: (rowIndex: number) => void;
+  globalThreshold: number;
+  globalUseMiseiriLogic: boolean;
 }) {
   const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
@@ -1051,7 +1068,11 @@ function ProcessStage({
   const inputNameFor = (rowIndex: number) =>
     (columnMap.name && rows[rowIndex]?.[columnMap.name]) || Object.values(rows[rowIndex] ?? {})[0] || "";
 
-  const canRetry = filter === "error" || filter === "not_found" || filter === "rejected";
+  const canRetry = filter === "error" || filter === "not_found" || filter === "rejected" || filter === "needs_review";
+
+  const [retryPanelOpen, setRetryPanelOpen] = useState(false);
+  const [retryThreshold, setRetryThreshold] = useState(globalThreshold);
+  const [retryMiseiri, setRetryMiseiri] = useState(globalUseMiseiriLogic);
 
   return (
     <div>
@@ -1145,13 +1166,94 @@ function ProcessStage({
           </div>
           {canRetry && filtered.length > 0 && (
             <button
-              onClick={() => onRetry(filteredIndices)}
+              onClick={() => {
+                setRetryThreshold(globalThreshold);
+                setRetryMiseiri(globalUseMiseiriLogic);
+                setRetryPanelOpen((s) => !s);
+              }}
               disabled={running}
               style={{ ...btnSecondary, opacity: running ? 0.4 : 1 }}
             >
-              Retry these {filtered.length} row{filtered.length === 1 ? "" : "s"}
+              {retryPanelOpen ? "Cancel" : `Retry these ${filtered.length} row${filtered.length === 1 ? "" : "s"}…`}
             </button>
           )}
+        </div>
+      )}
+
+      {canRetry && retryPanelOpen && filtered.length > 0 && (
+        <div style={{ marginBottom: 12, padding: "16px 18px", background: "var(--panel)", border: "1px solid var(--rule-soft)" }}>
+          <div style={{ fontSize: 13, color: "var(--ink-dim)", marginBottom: 12 }}>
+            Tweak settings for this retry batch only — your global preferences stay unchanged.
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, alignItems: "start" }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 6 }}>
+                Threshold for retry: <strong>{Math.round(retryThreshold * 100)}%</strong>
+              </div>
+              <input
+                type="range"
+                min={0.4}
+                max={0.99}
+                step={0.01}
+                value={retryThreshold}
+                onChange={(e) => setRetryThreshold(Number(e.target.value))}
+                style={{ width: "100%" }}
+              />
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--ink-faint)", marginTop: 4 }}>
+                <span>40% — very loose</span>
+                <span>85% — balanced</span>
+                <span>99% — strict</span>
+              </div>
+              <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                {[0.5, 0.65, 0.75, 0.85].map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setRetryThreshold(v)}
+                    style={{
+                      ...linkBtn,
+                      padding: "4px 10px",
+                      border: "1px solid var(--rule)",
+                      background: Math.abs(retryThreshold - v) < 0.005 ? "var(--rule-soft)" : "transparent",
+                    }}
+                  >
+                    {Math.round(v * 100)}%
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer", fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={retryMiseiri}
+                  onChange={(e) => setRetryMiseiri(e.target.checked)}
+                  style={{ marginTop: 3 }}
+                />
+                <span>
+                  <strong>Use Miseiri Logic</strong> for retry
+                  <div style={{ color: "var(--ink-dim)", fontSize: 12, marginTop: 2 }}>
+                    Trigram + Jaro-Winkler + containment, with sibling-cluster trap.
+                  </div>
+                </span>
+              </label>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <button
+              onClick={() => {
+                setRetryPanelOpen(false);
+                onRetry(filteredIndices, {
+                  matchThreshold: retryThreshold,
+                  useMiseiriLogic: retryMiseiri,
+                });
+              }}
+              disabled={running}
+              style={{ ...btnPrimary, opacity: running ? 0.4 : 1 }}
+            >
+              Retry {filtered.length} row{filtered.length === 1 ? "" : "s"} now
+            </button>
+            <button onClick={() => setRetryPanelOpen(false)} style={btnSecondary}>Cancel</button>
+          </div>
         </div>
       )}
 
