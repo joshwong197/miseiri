@@ -43,6 +43,12 @@ export interface EnrichedRow {
   notes?: string;
   // populated when status === "error" so the user can see the cause
   error_message?: string;
+  // Set by the Miseiri Logic decider when status === "needs_review" to
+  // tell the user *why* the row needs review (DUPLICATE_ENTITIES,
+  // PARTIAL_MATCH, LOW_CONFIDENCE, TRADING_NAME_MATCH).
+  review_reason?: string;
+  // Which scoring strategy produced this row, for A/B comparison in the UI.
+  scoring_strategy?: "default" | "miseiri";
 }
 
 export function buildEnrichedRow(opts: {

@@ -64,6 +64,7 @@ export default function HomePage() {
     shareholders: false,
   });
   const [matchThreshold, setMatchThreshold] = useState(0.85);
+  const [useMiseiriLogic, setUseMiseiriLogic] = useState(false);
   const [overrides, setOverrides] = useState<OverrideMap>({});
   const [results, setResults] = useState<RowResult[]>([]);
   const [progressIdx, setProgressIdx] = useState(0);
@@ -194,6 +195,7 @@ export default function HomePage() {
       companyNumber: columnMap.companyNumber ? row[columnMap.companyNumber] : undefined,
       fields: fieldGroups,
       matchThreshold,
+      scoringStrategy: useMiseiriLogic ? "miseiri" : "default",
     };
     try {
       const res = await fetch("/api/match-row", {
@@ -498,6 +500,8 @@ export default function HomePage() {
           setGroups={setFieldGroups}
           threshold={matchThreshold}
           setThreshold={setMatchThreshold}
+          useMiseiriLogic={useMiseiriLogic}
+          setUseMiseiriLogic={setUseMiseiriLogic}
           overrides={overrides}
           setOverrides={updateOverrides}
           onBack={() => setStage("map")}
@@ -781,13 +785,15 @@ function tagFor(map: ColumnMap, header: string): string | null {
   return null;
 }
 
-function FieldsStage({ rowCount, totalEst, groups, setGroups, threshold, setThreshold, overrides, setOverrides, onBack, onStart }: {
+function FieldsStage({ rowCount, totalEst, groups, setGroups, threshold, setThreshold, useMiseiriLogic, setUseMiseiriLogic, overrides, setOverrides, onBack, onStart }: {
   rowCount: number;
   totalEst: number;
   groups: FieldGroups;
   setGroups: (g: FieldGroups) => void;
   threshold: number;
   setThreshold: (t: number) => void;
+  useMiseiriLogic: boolean;
+  setUseMiseiriLogic: (v: boolean) => void;
   overrides: OverrideMap;
   setOverrides: (m: OverrideMap) => void;
   onBack: () => void;
@@ -848,6 +854,8 @@ function FieldsStage({ rowCount, totalEst, groups, setGroups, threshold, setThre
       </div>
 
       <ThresholdSlider value={threshold} onChange={setThreshold} />
+
+      <LogicToggle value={useMiseiriLogic} onChange={setUseMiseiriLogic} />
 
       <OverridesPanel overrides={overrides} setOverrides={setOverrides} />
 
@@ -940,6 +948,61 @@ function ThresholdSlider({ value, onChange }: { value: number; onChange: (v: num
           <p style={{ margin: "12px 0 0", color: "var(--ink-faint)", fontSize: 12 }}>
             Whatever the threshold, low-confidence candidates always show up in Needs review with the
             full candidate list — you never lose visibility.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LogicToggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+  const [showHelp, setShowHelp] = useState(false);
+  return (
+    <div style={{ marginTop: 16, padding: "20px 22px", border: "1px solid var(--rule)" }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={value}
+            onChange={(e) => onChange(e.target.checked)}
+          />
+          <div>
+            <div style={{ fontWeight: 500 }}>
+              Miseiri Logic <span style={{ color: "var(--ink-faint)", fontSize: 11, marginLeft: 8, letterSpacing: "0.05em" }}>EXPERIMENTAL</span>
+            </div>
+            <div style={{ color: "var(--ink-dim)", fontSize: 13, marginTop: 2 }}>
+              {value
+                ? "On — using trigram + Jaro-Winkler + containment, with sibling-cluster trap."
+                : "Off — using the default Jaccard + Levenshtein blend."}
+            </div>
+          </div>
+        </label>
+        <button
+          onClick={() => setShowHelp((s) => !s)}
+          style={{ background: "transparent", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 13, padding: 0 }}
+        >
+          {showHelp ? "Hide details" : "What's different?"}
+        </button>
+      </div>
+
+      {showHelp && (
+        <div style={{ marginTop: 16, fontSize: 13, color: "var(--ink-dim)", lineHeight: 1.7 }}>
+          <p style={{ margin: "0 0 12px" }}>
+            An alternative scoring blend designed around three real failure modes: boundary
+            disagreements (<em>AN ↔ A N</em>), truncation (<em>Acme ⊆ Acme Holdings</em>), and
+            sibling-cluster traps (eight identical &ldquo;Smith Family Trust&rdquo; entities at
+            different addresses).
+          </p>
+          <ul style={{ margin: "0 0 12px", paddingLeft: 20 }}>
+            <li><strong>Spaceless trigram Dice</strong> — fixes space-vs-no-space cases.</li>
+            <li><strong>Jaro-Winkler</strong> — character-level signal that rewards shared prefixes.</li>
+            <li><strong>Asymmetric token containment</strong> — query-tokens-in-candidate, helps truncated names.</li>
+            <li><strong>Dynamic gap requirement</strong> — borderline scores need more daylight to runner-up.</li>
+            <li><strong>Sibling-cluster trap</strong> — refuses to auto-pick when two top candidates are near-tied.</li>
+          </ul>
+          <p style={{ margin: 0, color: "var(--ink-faint)", fontSize: 12 }}>
+            Run the same file twice — once with this off, once on — and compare the &ldquo;needs review&rdquo; column.
+            Output rows from this logic include a <code>review_reason</code> hint.
           </p>
         </div>
       )}

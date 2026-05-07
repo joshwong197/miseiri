@@ -7,11 +7,13 @@
 // row. No HTTP concerns, no logging, no transport details.
 
 import { searchByName, searchByCompanyNumber, getEntity, getRoles, simplifyName, NzbnApiError } from "./nzbn/client";
-import { decide, type Candidate } from "./match";
+import { decide, decideMiseiri, type Candidate, stripQueryJunk } from "./match";
 import { score } from "./match/score";
 import { buildEnrichedRow, type FieldGroups, type EnrichedRow } from "./enrich";
 
 const NZBN_NAME_MISMATCH_THRESHOLD = 0.4;
+
+export type ScoringStrategy = "default" | "miseiri";
 
 export interface MatchOneInput {
   name?: string;
@@ -19,6 +21,13 @@ export interface MatchOneInput {
   companyNumber?: string;
   fields?: FieldGroups;
   matchThreshold?: number;
+  /**
+   * Which scoring/decision logic to run during the name-search path.
+   * "default" — current production blend.
+   * "miseiri" — opt-in alternative (trigram + JW + containment + dynamic
+   *  gap + sibling trap + reviewReason). For A/B comparison.
+   */
+  scoringStrategy?: ScoringStrategy;
 }
 
 export async function matchOne(input: MatchOneInput): Promise<EnrichedRow> {
@@ -111,14 +120,22 @@ export async function matchOne(input: MatchOneInput): Promise<EnrichedRow> {
       });
     }
 
-    let search = await searchByName(inputName, 10);
+    // Strip role/location junk ("Carters Christchurch office" → "Carters
+    // Christchurch") so NZBN's prefix-based search has a chance of
+    // surfacing the correct legal entity. The cleaned form is also used
+    // for scoring — the stripped words are by definition not part of any
+    // legal name, so keeping them around only drags scores down.
+    const cleanedName = stripQueryJunk(inputName);
+    const scoringQuery = cleanedName || inputName;
+
+    let search = await searchByName(scoringQuery, 10);
     let items = search.items ?? [];
 
     // Retry with a simplified version when the original yields nothing.
-    // We keep the *original* query as the source-of-truth for scoring so
+    // We keep the *cleaned* query as the source-of-truth for scoring so
     // a generic simplification ("Staff") doesn't auto-match STAFFY LIMITED.
     if (items.length === 0) {
-      const simpler = simplifyName(inputName);
+      const simpler = simplifyName(scoringQuery);
       if (simpler) {
         search = await searchByName(simpler, 10);
         items = search.items ?? [];
@@ -138,7 +155,10 @@ export async function matchOne(input: MatchOneInput): Promise<EnrichedRow> {
       && input.matchThreshold <= 1
       ? input.matchThreshold
       : undefined;
-    const outcome = decide({ query: inputName, candidates, highConfidenceThreshold: threshold });
+    const useMiseiri = input.scoringStrategy === "miseiri";
+    const outcome = useMiseiri
+      ? decideMiseiri({ query: scoringQuery, candidates, highConfidenceThreshold: threshold })
+      : decide({ query: scoringQuery, candidates, highConfidenceThreshold: threshold });
 
     let enriched: EnrichedRow;
     if (outcome.status !== "matched") {
@@ -166,6 +186,10 @@ export async function matchOne(input: MatchOneInput): Promise<EnrichedRow> {
         rolesData,
       });
     }
+
+    enriched.scoring_strategy = useMiseiri ? "miseiri" : "default";
+    const reviewReason = (outcome as { reviewReason?: string }).reviewReason;
+    if (reviewReason) enriched.review_reason = reviewReason;
 
     if (nzbnFallbackNote) {
       enriched.notes = enriched.notes

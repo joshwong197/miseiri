@@ -87,3 +87,50 @@ export function expandAbbreviations(name: string): string {
 export function tokens(name: string): string[] {
   return normalizeForCompare(name).split(" ").filter(Boolean);
 }
+
+// Words customers tack onto entity names in ledgers (e.g. "Carters
+// Christchurch office", "Smith Wellington branch", "Acme HQ"). They
+// never appear in legal names registered with NZBN, so removing them
+// before search both surfaces the right candidate and stops them from
+// dragging the score down. Stripped from query and candidate alike.
+const QUERY_JUNK_WORDS = new Set([
+  "office",
+  "offices",
+  "branch",
+  "branches",
+  "warehouse",
+  "warehouses",
+  "store",
+  "stores",
+  "shop",
+  "shops",
+  "depot",
+  "depots",
+  "outlet",
+  "outlets",
+  "headquarters",
+  "hq",
+  "division",
+  "div",
+  "location",
+  "site",
+]);
+
+/**
+ * Strip role/location descriptors and bare numeric tokens from a query
+ * string. Used in the name-search path to clean up customer ledgers
+ * before talking to NZBN.
+ *
+ * Returns the stripped string, or the input itself if stripping would
+ * leave nothing useful (so we never send an empty query).
+ */
+export function stripQueryJunk(name: string): string {
+  if (!name) return "";
+  const base = normalize(name);
+  if (!base) return "";
+  const stripped = base
+    .split(" ")
+    .filter((t) => t.length > 0 && !QUERY_JUNK_WORDS.has(t) && !/^\d+$/.test(t))
+    .join(" ");
+  return stripped.length === 0 ? base : stripped;
+}
