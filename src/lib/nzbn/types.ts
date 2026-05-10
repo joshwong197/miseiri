@@ -47,3 +47,13 @@ export interface NzbnSearchResponse {
   pageSize: number;
   items: NzbnEntity[];
 }
+
+// Normalised result of /entities/{nzbn}/gst. The endpoint's exact response
+// shape varies (object vs array, nested vs flat) so the client extracts a
+// flat record. `null` from getGst means "no GST data exposed for this
+// entity" — could be opted-out, never-registered, or simply not on the
+// register. We can't distinguish those without more signal.
+export interface NzbnGstInfo {
+  gstNumber: string | null;
+  registered: boolean;
+}

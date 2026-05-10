@@ -1,7 +1,7 @@
 // Map a resolved NZBN entity into the flat enrichment shape the
 // frontend writes into the user's spreadsheet. Pure transform; no I/O.
 
-import type { NzbnEntity } from "./nzbn/types";
+import type { NzbnEntity, NzbnGstInfo } from "./nzbn/types";
 import { pickAddress, formatAddress, normalizeAddresses, getRoles } from "./nzbn/client";
 import type { MatchMethod, MatchStatus } from "./match";
 
@@ -34,6 +34,8 @@ export interface EnrichedRow {
   email?: string | null;
   website?: string | null;
   anzsic_codes?: string;
+  gst_registered?: boolean | null;
+  gst_number?: string | null;
   director_count?: number;
   director_names?: string;
   shareholder_groups?: number;
@@ -58,8 +60,9 @@ export function buildEnrichedRow(opts: {
   entity: NzbnEntity | null;
   fields: FieldGroups;
   rolesData?: unknown;
+  gstData?: NzbnGstInfo | null;
 }): EnrichedRow {
-  const { status, method, confidence, entity, fields, rolesData } = opts;
+  const { status, method, confidence, entity, fields, rolesData, gstData } = opts;
 
   const out: EnrichedRow = {
     nzbn_status: status,
@@ -105,11 +108,17 @@ export function buildEnrichedRow(opts: {
     out.director_names = directors.join(" | ");
   }
 
+  if (fields.gst) {
+    // gstData === null means the endpoint returned no usable record; we
+    // surface that as `null` so the spreadsheet column makes the
+    // distinction visible to the user (vs `false` which means actively
+    // not registered).
+    out.gst_registered = gstData ? gstData.registered : null;
+    out.gst_number = gstData?.gstNumber ?? null;
+  }
+
   return out;
 }
-
-// Optional: GST is a separate fetch — hook in later when the endpoint
-// is wired up. For now leave gst fields off until we confirm contract.
 
 function extractDirectorNames(rolesData: unknown): string[] {
   const names: string[] = [];

@@ -3,7 +3,7 @@
 //  - exponential backoff on 429/5xx
 //  - shape normalization (addresses can be flat or { addressList })
 
-import type { NzbnEntity, NzbnSearchResponse, NzbnAddress } from "./types";
+import type { NzbnEntity, NzbnSearchResponse, NzbnAddress, NzbnGstInfo } from "./types";
 import { expandAbbreviations } from "../match/normalize";
 
 const BASE_URL = "https://api.business.govt.nz/gateway/nzbn/v5";
@@ -112,6 +112,37 @@ export async function getRoles(nzbn: string): Promise<any> {
   if (res.status === 404) return { roleTypes: [] };
   if (!res.ok) throw new NzbnApiError(res.status, `Roles fetch failed: ${res.statusText}`);
   return res.json();
+}
+
+export async function getGst(nzbn: string): Promise<NzbnGstInfo | null> {
+  const res = await fetchWithRetry(`${BASE_URL}/entities/${nzbn}/gst`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new NzbnApiError(res.status, `GST fetch failed: ${res.statusText}`);
+
+  const text = await res.text();
+  if (!text.trim()) return null;
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return null;
+  }
+
+  // Tolerate both object and array shapes — the endpoint isn't well-documented
+  // and has been seen returning either.
+  const records = Array.isArray(body) ? body : [body];
+  for (const rec of records) {
+    if (!rec || typeof rec !== "object") continue;
+    const r = rec as Record<string, unknown>;
+    const num = String(r.gstNumber ?? "").trim();
+    const ended = r.endDate ?? r.deregistrationDate ?? null;
+    if (num && !ended) return { gstNumber: num, registered: true };
+  }
+  // Saw records but none active → previously registered, currently not.
+  if (records.some((r) => r && typeof r === "object")) {
+    return { gstNumber: null, registered: false };
+  }
+  return null;
 }
 
 /** Normalize the address shape duality into a flat array. */

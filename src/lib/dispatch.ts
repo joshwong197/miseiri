@@ -6,12 +6,27 @@
 // ladder (NZBN → company number → name search), returns the enriched
 // row. No HTTP concerns, no logging, no transport details.
 
-import { searchByName, searchByCompanyNumber, getEntity, getRoles, simplifyName, NzbnApiError } from "./nzbn/client";
+import { searchByName, searchByCompanyNumber, getEntity, getRoles, getGst, simplifyName, NzbnApiError } from "./nzbn/client";
+import type { NzbnGstInfo } from "./nzbn/types";
 import { decide, decideMiseiri, type Candidate, stripQueryJunk, generateSearchVariants } from "./match";
 import { score } from "./match/score";
 import { buildEnrichedRow, type FieldGroups, type EnrichedRow } from "./enrich";
 
 const NZBN_NAME_MISMATCH_THRESHOLD = 0.4;
+
+// Fetch optional per-entity extras in parallel. Each extra is gated by its
+// own field toggle and degrades gracefully (roles 404 → empty, GST 404 →
+// null) so a missing extra never poisons the whole row.
+async function fetchExtras(
+  nzbn: string,
+  fields: FieldGroups,
+): Promise<{ rolesData: unknown; gstData: NzbnGstInfo | null | undefined }> {
+  const [rolesData, gstData] = await Promise.all([
+    fields.directors ? getRoles(nzbn) : Promise.resolve(undefined),
+    fields.gst ? getGst(nzbn) : Promise.resolve(undefined),
+  ]);
+  return { rolesData, gstData };
+}
 
 export type ScoringStrategy = "default" | "miseiri";
 
@@ -53,7 +68,7 @@ export async function matchOne(input: MatchOneInput): Promise<EnrichedRow> {
         if (inputName) {
           const sim = score({ query: inputName, candidateName: entity.entityName }).total;
           if (sim < NZBN_NAME_MISMATCH_THRESHOLD) {
-            const rolesData = fields.directors ? await getRoles(entity.nzbn) : undefined;
+            const { rolesData, gstData } = await fetchExtras(entity.nzbn, fields);
             const enriched = buildEnrichedRow({
               status: "needs_review",
               method: "nzbn_lookup",
@@ -61,6 +76,7 @@ export async function matchOne(input: MatchOneInput): Promise<EnrichedRow> {
               entity,
               fields,
               rolesData,
+              gstData,
             });
             enriched.candidates = [{
               nzbn: entity.nzbn,
@@ -72,7 +88,7 @@ export async function matchOne(input: MatchOneInput): Promise<EnrichedRow> {
           }
         }
 
-        const rolesData = fields.directors ? await getRoles(entity.nzbn) : undefined;
+        const { rolesData, gstData } = await fetchExtras(entity.nzbn, fields);
         return buildEnrichedRow({
           status: "matched",
           method: "nzbn_lookup",
@@ -80,6 +96,7 @@ export async function matchOne(input: MatchOneInput): Promise<EnrichedRow> {
           entity,
           fields,
           rolesData,
+          gstData,
         });
       } catch (err) {
         const isLookupMiss = err instanceof NzbnApiError && (err.status === 400 || err.status === 404);
@@ -96,7 +113,7 @@ export async function matchOne(input: MatchOneInput): Promise<EnrichedRow> {
       const items = found.items ?? [];
       if (items.length === 1) {
         const entity = await getEntity(items[0].nzbn);
-        const rolesData = fields.directors ? await getRoles(entity.nzbn) : undefined;
+        const { rolesData, gstData } = await fetchExtras(entity.nzbn, fields);
         return buildEnrichedRow({
           status: "matched",
           method: "company_number_lookup",
@@ -104,6 +121,7 @@ export async function matchOne(input: MatchOneInput): Promise<EnrichedRow> {
           entity,
           fields,
           rolesData,
+          gstData,
         });
       }
       // Multiple or zero — fall through to name search if name provided.
@@ -210,7 +228,7 @@ export async function matchOne(input: MatchOneInput): Promise<EnrichedRow> {
       }));
     } else {
       const entity = await getEntity(outcome.best!.nzbn);
-      const rolesData = fields.directors ? await getRoles(entity.nzbn) : undefined;
+      const { rolesData, gstData } = await fetchExtras(entity.nzbn, fields);
       enriched = buildEnrichedRow({
         status: outcome.status,
         method: outcome.method,
@@ -218,6 +236,7 @@ export async function matchOne(input: MatchOneInput): Promise<EnrichedRow> {
         entity,
         fields,
         rolesData,
+        gstData,
       });
     }
 
